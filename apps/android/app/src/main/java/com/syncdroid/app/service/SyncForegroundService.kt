@@ -69,7 +69,10 @@ class SyncForegroundService : Service() {
         eventNotifications = SyncNotificationCenter(this)
         storageCapacity = StorageCapacityGuard(this)
         lowStorageApprovals = LowStorageApprovalStore(this)
-        serviceScope.launch { FileHistoryRepository(this@SyncForegroundService, database, identity.deviceId).cleanupExpired() }
+        serviceScope.launch {
+            FileHistoryRepository(this@SyncForegroundService, database, identity.deviceId).cleanupExpired()
+            refreshActionItems()
+        }
 
         ServiceCompat.startForeground(
             this,
@@ -276,7 +279,7 @@ class SyncForegroundService : Service() {
         }
     }
 
-    private fun handleRuntimeEvent(event: MeshRuntimeEvent) {
+    private suspend fun handleRuntimeEvent(event: MeshRuntimeEvent) {
         when (event) {
             is MeshRuntimeEvent.DiscoveryWaiting -> setStatus(
                 "Waiting for nearby devices",
@@ -316,6 +319,7 @@ class SyncForegroundService : Service() {
                     showActiveSyncStatus()
                 }
                 eventNotifications.showSyncComplete(event.peerId, event.peerName)
+                refreshActionItems()
                 SyncServiceController.report(syncCompleted = true)
                 runPendingReconcileIfIdle()
             }
@@ -328,6 +332,7 @@ class SyncForegroundService : Service() {
                     showActiveSyncStatus()
                 }
                 eventNotifications.showSyncFailed(event.peerId, event.peerName)
+                refreshActionItems()
                 runPendingReconcileIfIdle()
             }
             is MeshRuntimeEvent.ChatMessagesReceived -> {
@@ -349,6 +354,14 @@ class SyncForegroundService : Service() {
             "Comparing files and preparing transfers"
         }
         setStatus(title, detail)
+    }
+
+    private suspend fun refreshActionItems() {
+        val profile = LocalMeshProfileStore(this).getOrCreate()
+        eventNotifications.updateActionItems(
+            conflicts = database.syncDao().unresolvedConflictCount(),
+            foldersToConfigure = database.syncDao().pendingConfigurationCount(identity.deviceId, profile.groupId),
+        )
     }
 
     private suspend fun storageWarningBeforeSync(profile: LocalMeshProfile): StorageSyncWarning? {

@@ -108,19 +108,22 @@ class SyncNotificationCenter(context: Context) {
             return
         }
         if (!canNotify()) return
-        val parts = buildList {
-            if (conflicts > 0) add("$conflicts sync conflict${if (conflicts == 1) "" else "s"}")
-            if (foldersToConfigure > 0) add("$foldersToConfigure folder${if (foldersToConfigure == 1) "" else "s"} to configure")
+        val folderText = "$foldersToConfigure folder${if (foldersToConfigure == 1) " needs" else "s need"} configuring"
+        val conflictText = "$conflicts sync conflict${if (conflicts == 1) " needs" else "s need"} review"
+        val detail = when {
+            foldersToConfigure > 0 && conflicts > 0 -> "$conflictText · Tap to open Folders."
+            foldersToConfigure > 0 -> "Tap to open Folders."
+            else -> "Tap to review."
         }
         manager.notify(ACTION_NOTIFICATION_ID, NotificationCompat.Builder(appContext, CHANNEL_ACTIONS)
             .setSmallIcon(R.drawable.ic_syncdroid)
-            .setContentTitle("SyncDroid-Mesh needs your input")
-            .setContentText(parts.joinToString(" · "))
-            .setStyle(NotificationCompat.BigTextStyle().bigText(parts.joinToString(" · ")))
+            .setContentTitle(if (foldersToConfigure > 0) folderText else conflictText)
+            .setContentText(detail)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(detail))
             .setNumber(conflicts + foldersToConfigure)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
-            .setContentIntent(openAppIntent())
+            .setContentIntent(openAppIntent(openFolders = foldersToConfigure > 0))
             .build())
     }
 
@@ -159,10 +162,12 @@ class SyncNotificationCenter(context: Context) {
         Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
             appContext.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
 
-    private fun openAppIntent(): PendingIntent = PendingIntent.getActivity(
+    private fun openAppIntent(openFolders: Boolean = false): PendingIntent = PendingIntent.getActivity(
         appContext,
-        0,
-        Intent(appContext, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+        if (openFolders) 1 else 0,
+        Intent(appContext, MainActivity::class.java)
+            .apply { if (openFolders) action = MainActivity.ACTION_OPEN_FOLDERS }
+            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
     )
 

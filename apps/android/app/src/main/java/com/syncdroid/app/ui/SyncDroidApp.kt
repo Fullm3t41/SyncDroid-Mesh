@@ -226,7 +226,7 @@ private enum class MainTab(val label: String, val icon: ImageVector) {
 private enum class ConflictReviewAction { KeepLocal, KeepRemote, KeepBoth }
 
 @Composable
-fun SyncDroidApp() {
+fun SyncDroidApp(openFoldersRequest: Int = 0) {
     val context = LocalContext.current
     val view = LocalView.current
     val systemDarkTheme = isSystemInDarkTheme()
@@ -261,6 +261,21 @@ fun SyncDroidApp() {
     var conflictReviewFolderId by rememberSaveable { mutableStateOf<String?>(null) }
     var conflictResolutionError by remember { mutableStateOf<String?>(null) }
     var resolvingConflict by remember { mutableStateOf(false) }
+
+    LaunchedEffect(openFoldersRequest) {
+        if (openFoldersRequest > 0) {
+            selectedTab = MainTab.Folders
+            showPowerSettings = false
+            showWifiRules = false
+            showCloudSettings = false
+            showFileHistory = false
+            folderSettingsId = null
+            openFolderContentsId = null
+            showFileManager = false
+            pendingSystemUri = null
+        }
+    }
+
     val folderStore = remember(context) { FolderConfigurationStore(context) }
     val database = remember(context) { SyncDroidDatabase.get(context) }
     val identity = remember { AndroidDeviceIdentity() }
