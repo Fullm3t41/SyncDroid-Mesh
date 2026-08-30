@@ -7,6 +7,8 @@ data class PeerDevice(
     val online: Boolean,
     val initials: String,
     val lastOnlineAtMillis: Long? = null,
+    val syncing: Boolean = false,
+    val syncProgress: Float? = null,
 )
 
 data class SaveFolder(

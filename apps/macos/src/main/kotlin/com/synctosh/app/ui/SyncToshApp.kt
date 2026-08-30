@@ -37,7 +37,6 @@ import androidx.compose.ui.unit.dp
 import com.synctosh.app.model.MainSection
 import com.synctosh.app.model.ThemeMode
 import com.synctosh.app.mesh.MeshRuntime
-import com.synctosh.app.mesh.LocalFolderBindingState
 import com.synctosh.app.mesh.MeshFolder
 import com.synctosh.app.platform.AppPreferences
 import com.synctosh.app.platform.MacDeviceName
@@ -89,7 +88,6 @@ fun SyncToshApp(
     var folderConfigurationError by remember { mutableStateOf<String?>(null) }
     var platformError by remember { mutableStateOf<String?>(null) }
     var dismissedWifiSuggestion by remember { mutableStateOf<String?>(null) }
-    val promptedFolderIds = remember { mutableSetOf<String>() }
     val suggestedWifi = meshState.currentWifiName?.takeIf { current ->
         meshState.profile != null && current !in meshState.registeredWifiNames && current != dismissedWifiSuggestion
     }
@@ -104,16 +102,6 @@ fun SyncToshApp(
         if (showJoinMesh && meshState.profile != null) {
             showJoinMesh = false
             runtime.dismissError()
-        }
-    }
-
-    LaunchedEffect(meshState.folders) {
-        val pending = meshState.folders.firstOrNull {
-            it.bindingState == LocalFolderBindingState.PENDING_CONFIGURATION && it.folderId !in promptedFolderIds
-        }
-        if (pending != null && folderToConfigure == null) {
-            promptedFolderIds += pending.folderId
-            folderToConfigure = pending
         }
     }
 

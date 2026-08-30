@@ -55,6 +55,7 @@ internal fun runSyncToshUi(args: Array<String>) {
         var discoveryInterval by remember { mutableIntStateOf(preferences.discoveryIntervalMinutes) }
         var discoveryWindow by remember { mutableLongStateOf(preferences.discoveryWindowSeconds) }
         var alwaysOnDiscovery by remember { mutableStateOf(preferences.alwaysOnDiscovery) }
+        var windowVisible by remember { mutableStateOf(true) }
         val windowState = rememberWindowState(
             position = WindowPosition.Aligned(androidx.compose.ui.Alignment.Center),
             width = preferences.windowWidth.dp,
@@ -62,16 +63,15 @@ internal fun runSyncToshUi(args: Array<String>) {
         )
         val appIcon = painterResource("icons/synctosh.png")
 
-        fun saveWindowState() {
-            preferences.windowWidth = windowState.size.width.value
-            preferences.windowHeight = windowState.size.height.value
-        }
-
         fun stopUi() {
             if (!stopped.compareAndSet(false, true)) return
-            saveWindowState()
+            val windowWidth = windowState.size.width.value
+            val windowHeight = windowState.size.height.value
+            windowVisible = false
             uiScope.launch {
                 withContext(Dispatchers.IO) {
+                    preferences.windowWidth = windowWidth
+                    preferences.windowHeight = windowHeight
                     runCatching { meshRuntime.closeAfterActiveTransfers() }
                         .onFailure { runCatching { meshRuntime.close() } }
                     workerEndpoint?.send(WorkerCommand.UI_CLOSED)
@@ -102,6 +102,7 @@ internal fun runSyncToshUi(args: Array<String>) {
             title = "SyncTosh",
             icon = appIcon,
             state = windowState,
+            visible = windowVisible,
             onCloseRequest = ::stopUi,
         ) {
             SyncToshApp(

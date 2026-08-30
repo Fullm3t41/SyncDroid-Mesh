@@ -14,7 +14,13 @@ import com.syncdroid.app.scheduling.DiscoveryPolicy
 class SyncServiceNotification(private val context: Context) {
     init { createChannel() }
 
-    fun build(title: String, detail: String, policy: DiscoveryPolicy): Notification {
+    fun build(
+        title: String,
+        detail: String,
+        policy: DiscoveryPolicy,
+        syncing: Boolean = false,
+        progress: Float? = null,
+    ): Notification {
         val interval = formatInterval(policy.intervalMinutes)
         val window = formatWindow(policy.windowSeconds)
         val scheduleSummary = if (policy.alwaysOnDiscovery) {
@@ -22,7 +28,7 @@ class SyncServiceNotification(private val context: Context) {
         } else {
             "Discovery every $interval · window $window"
         }
-        return NotificationCompat.Builder(context, CHANNEL_ID)
+        val builder = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_syncdroid)
             .setContentTitle(title)
             .setContentText(detail)
@@ -51,7 +57,11 @@ class SyncServiceNotification(private val context: Context) {
                 requestCode = 2103,
                 action = SyncForegroundService.ACTION_REFRESH,
             ))
-            .build()
+        if (syncing) {
+            if (progress == null) builder.setProgress(0, 0, true)
+            else builder.setProgress(100, (progress.coerceIn(0f, 1f) * 100).toInt(), false)
+        }
+        return builder.build()
     }
 
     private fun createChannel() {

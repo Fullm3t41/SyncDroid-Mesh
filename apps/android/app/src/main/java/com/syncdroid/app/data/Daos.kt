@@ -134,6 +134,16 @@ interface SyncDao {
     )
     suspend fun configuredBindings(deviceId: String, groupId: String): List<LocalFolderBindingEntity>
 
+    @Query(
+        """
+        SELECT COUNT(*) FROM local_folder_bindings AS b
+        INNER JOIN sync_folders AS f ON f.folderId = b.folderId
+        WHERE b.deviceId = :deviceId AND f.groupId = :groupId
+          AND f.enabled = 1 AND b.state = 'PENDING_CONFIGURATION'
+        """,
+    )
+    suspend fun pendingConfigurationCount(deviceId: String, groupId: String): Int
+
     @Query("SELECT * FROM folder_announcements WHERE groupId = :groupId ORDER BY createdAtMillis")
     suspend fun folderAnnouncements(groupId: String): List<FolderAnnouncementEntity>
 
@@ -272,6 +282,9 @@ interface SyncDao {
 
     @Query("SELECT COUNT(*) FROM conflicts WHERE folderId = :folderId AND state = 'Unresolved'")
     suspend fun unresolvedConflictCount(folderId: String): Int
+
+    @Query("SELECT COUNT(*) FROM conflicts WHERE state = 'Unresolved'")
+    suspend fun unresolvedConflictCount(): Int
 
     @Query("SELECT * FROM conflicts WHERE conflictId = :conflictId LIMIT 1")
     suspend fun conflict(conflictId: String): ConflictEntity?

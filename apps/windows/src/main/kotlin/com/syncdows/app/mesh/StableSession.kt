@@ -78,6 +78,8 @@ class MeshFileSyncSession(
     private val profile: MeshProfile,
     private val updateCache: MeshUpdateCache? = null,
     private val onBytesTransferred: (Long) -> Unit = {},
+    private val onIncomingTransferPlanned: (Long) -> Unit = {},
+    private val onIncomingBytesTransferred: (Long) -> Unit = {},
 ) {
     private val history = FileHistoryRepository(store, identity.deviceId)
     private val chatAttachments = ChatAttachmentStore(store)
@@ -115,15 +117,28 @@ class MeshFileSyncSession(
             val manifest = plan.remoteManifest?.copy(relativePath = plan.relativePath).takeIf {
                 plan.action == FileSyncAction.DownloadRemote && !plan.remote.deleted && root != null
             }
+            val missingBlocks = manifest?.let {
+                ResumableBlockReceiver(store, transferCache(), AtomicFileApplier(root!!)).missingBlocks(it)
+            }.orEmpty()
             val requestCount = when {
                 plan.action != FileSyncAction.DownloadRemote || plan.remote.deleted || root == null -> 0
-                manifest != null -> ResumableBlockReceiver(store, transferCache(), AtomicFileApplier(root))
-                    .missingBlocks(manifest).size
+                manifest != null -> missingBlocks.size
                 else -> 1
             }
-            PreparedDownload(plan, manifest, requestCount)
+            val expectedBytes = when {
+                requestCount == 0 -> 0L
+                manifest != null -> manifest.blocks
+                    .filter { it.index in missingBlocks }
+                    .sumOf { it.sizeBytes.toLong() }
+                else -> plan.remote.sizeBytes
+            }
+            PreparedDownload(plan, manifest, requestCount, expectedBytes)
         }
         val localRequests = prepared.sumOf(PreparedDownload::requestCount) + missingAttachments.size
+        onIncomingTransferPlanned(
+            prepared.sumOf(PreparedDownload::expectedBytes) +
+                missingAttachments.sumOf { it.attachment?.sizeBytes ?: 0L },
+        )
         connection.send(MeshSessionCodec.encode(MeshSessionMessage.TransferPlan(localRequests)))
         val remoteRequests = connection.receiveSession<MeshSessionMessage.TransferPlan>().requestCount
 
@@ -177,6 +192,10 @@ class MeshFileSyncSession(
         attachmentDownloads: List<MeshChatMessage>,
         engine: FileSyncEngine,
     ): Int {
+        val onIncomingBytes: (Long) -> Unit = { bytes ->
+            onBytesTransferred(bytes)
+            onIncomingBytesTransferred(bytes)
+        }
         val acknowledgementBlocked = mutableSetOf<String>()
         var appliedChangeCount = 0
         downloads.forEach { prepared ->
@@ -209,12 +228,12 @@ class MeshFileSyncSession(
                         if (prepared.requestCount > 0) {
                             val completed = ResumableBlockPeerClient(
                                 ResumableBlockReceiver(store, transferCache(), applier),
-                                onBytesTransferred,
+                                onIncomingBytes,
                             ).fetchMissing(connection, prepared.manifest, plan.remote.relativePath)
                             require(completed) { "Resumable transfer did not receive every block" }
                         }
                     } else {
-                        WholeFilePeerClient(transferCache(), onBytesTransferred).fetch(
+                        WholeFilePeerClient(transferCache(), onIncomingBytes).fetch(
                             connection,
                             FileTransferMessage.WholeFileRequest(
                                 plan.remote.folderId,
@@ -237,7 +256,7 @@ class MeshFileSyncSession(
             }
         }
         attachmentDownloads.forEach { message ->
-            runCatching { chatAttachments.receive(connection, message, onBytesTransferred) }
+            runCatching { chatAttachments.receive(connection, message, onIncomingBytes) }
         }
         return appliedChangeCount
     }
@@ -273,6 +292,7 @@ class MeshFileSyncSession(
         val plan: FileSyncPlan,
         val manifest: BlockManifest?,
         val requestCount: Int,
+        val expectedBytes: Long,
     )
 }
 

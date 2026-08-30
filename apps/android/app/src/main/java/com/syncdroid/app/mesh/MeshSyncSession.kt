@@ -53,6 +53,8 @@ class MeshSyncSession(
     private val groupName: String,
     private val updateCache: MeshUpdateCache? = null,
     private val onBytesTransferred: (Long) -> Unit = {},
+    private val onIncomingTransferPlanned: (Long) -> Unit = {},
+    private val onIncomingBytesTransferred: (Long) -> Unit = {},
 ) {
     private val appContext = context.applicationContext
     private val syncDao = database.syncDao()
@@ -107,6 +109,10 @@ class MeshSyncSession(
         }
         val prepared = prepareDownloads(plans)
         val localRequestCount = prepared.sumOf(PreparedDownload::requestCount) + missingAttachments.size
+        onIncomingTransferPlanned(
+            prepared.sumOf(PreparedDownload::expectedBytes) +
+                missingAttachments.sumOf { it.attachment?.sizeBytes ?: 0L },
+        )
         connection.send(MeshSessionCodec.encode(MeshSessionMessage.TransferPlan(localRequestCount)))
         val remoteRequestCount = connection.receiveSession<MeshSessionMessage.TransferPlan>().requestCount
 
@@ -271,12 +277,12 @@ class MeshSyncSession(
     private suspend fun prepareDownloads(plans: List<FileSyncPlan>): List<PreparedDownload> {
         return plans.map { plan ->
             if (plan.action != FileSyncAction.DownloadRemote || plan.remote.deleted) {
-                PreparedDownload(plan, null, 0)
+                PreparedDownload(plan, null, 0, 0L)
             } else {
                 val binding = syncDao.getBinding(plan.remote.folderId, identity.deviceId)
                 val applier = binding?.fileApplierOrNull()
                 if (applier == null) {
-                    PreparedDownload(plan, null, 0)
+                    PreparedDownload(plan, null, 0, 0L)
                 } else {
                     val storageWarning = storageCapacity.warningForIncomingFile(
                         binding,
@@ -284,12 +290,20 @@ class MeshSyncSession(
                         lowStorageApprovals,
                     )
                     if (storageWarning != null) {
-                        PreparedDownload(plan, null, 0, storageWarning)
+                        PreparedDownload(plan, null, 0, 0L, storageWarning)
                     } else if (plan.remoteManifest != null) {
                         val receiver = blockReceiver(applier)
-                        PreparedDownload(plan, receiver, receiver.missingBlocks(plan.remoteManifest).size)
+                        val missingBlocks = receiver.missingBlocks(plan.remoteManifest)
+                        PreparedDownload(
+                            plan,
+                            receiver,
+                            missingBlocks.size,
+                            plan.remoteManifest.blocks
+                                .filter { it.index in missingBlocks }
+                                .sumOf { it.sizeBytes.toLong() },
+                        )
                     } else {
-                        PreparedDownload(plan, null, 1)
+                        PreparedDownload(plan, null, 1, plan.remote.sizeBytes)
                     }
                 }
             }
@@ -302,6 +316,10 @@ class MeshSyncSession(
         downloads: List<PreparedDownload>,
         attachmentDownloads: List<MeshChatMessage>,
     ): DownloadPhaseResult {
+        val onIncomingBytes: (Long) -> Unit = { bytes ->
+            onBytesTransferred(bytes)
+            onIncomingBytesTransferred(bytes)
+        }
         val acknowledgementBlocked = mutableSetOf<String>()
         val storageBlockedFolders = mutableSetOf<String>()
         val storageWarnings = mutableListOf<StorageSyncWarning>()
@@ -351,14 +369,14 @@ class MeshSyncSession(
                         if (prepared.requestCount > 0) {
                             check(ResumableBlockPeerClient(
                                 prepared.blockReceiver,
-                                onBytesTransferred,
+                                onIncomingBytes,
                             ).fetchMissing(connection, plan.remoteManifest))
                         }
                         binding.directDirectoryOrNull()?.let {
                             File(it, plan.relativePath).setLastModified(plan.remote.modifiedAtMillis)
                         }
                     } else {
-                        WholeFilePeerClient(transferCache(), onBytesTransferred).fetch(
+                        WholeFilePeerClient(transferCache(), onIncomingBytes).fetch(
                             connection,
                             FileTransferMessage.WholeFileRequest(
                                 plan.remote.folderId,
@@ -381,7 +399,7 @@ class MeshSyncSession(
             }
         }
         attachmentDownloads.forEach { message ->
-            runCatching { chatAttachments.receive(connection, message, onBytesTransferred) }
+            runCatching { chatAttachments.receive(connection, message, onIncomingBytes) }
         }
         return DownloadPhaseResult(storageBlockedFolders, storageWarnings, appliedChangeCount)
     }
@@ -449,6 +467,7 @@ class MeshSyncSession(
         val plan: FileSyncPlan,
         val blockReceiver: ResumableBlockReceiver?,
         val requestCount: Int,
+        val expectedBytes: Long,
         val storageWarning: StorageSyncWarning? = null,
     )
 
