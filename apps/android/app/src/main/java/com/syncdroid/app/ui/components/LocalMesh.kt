@@ -1,6 +1,11 @@
 package com.syncdroid.app.ui.components
 
 import android.graphics.Paint
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
@@ -14,7 +19,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
@@ -44,6 +51,12 @@ fun LocalMesh(
     val spoke = MaterialTheme.colorScheme.secondary
     val text = MaterialTheme.colorScheme.onSurface
     val mutedText = MaterialTheme.colorScheme.onSurfaceVariant
+    val progressRotation = rememberInfiniteTransition(label = "mesh progress").animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(tween(1_200, easing = LinearEasing)),
+        label = "mesh progress rotation",
+    ).value
 
     Box(
         modifier = modifier
@@ -95,6 +108,26 @@ fun LocalMesh(
                     radius = nodeRadius,
                     center = node,
                 )
+                if (peer.syncing) {
+                    val ringRadius = nodeRadius + 6.dp.toPx()
+                    val strokeWidth = 3.dp.toPx()
+                    drawCircle(
+                        color = line.copy(alpha = 0.35f),
+                        radius = ringRadius,
+                        center = node,
+                        style = Stroke(width = strokeWidth),
+                    )
+                    val progress = peer.syncProgress
+                    drawArc(
+                        color = spoke,
+                        startAngle = if (progress == null) progressRotation - 90f else -90f,
+                        sweepAngle = if (progress == null) 105f else 360f * progress.coerceIn(0f, 1f),
+                        useCenter = false,
+                        topLeft = Offset(node.x - ringRadius, node.y - ringRadius),
+                        size = Size(ringRadius * 2, ringRadius * 2),
+                        style = Stroke(width = strokeWidth, cap = StrokeCap.Round),
+                    )
+                }
                 drawContext.canvas.nativeCanvas.drawText(
                     peer.initials,
                     node.x,

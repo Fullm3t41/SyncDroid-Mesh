@@ -1,6 +1,11 @@
 package com.syncdows.app.ui
 
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -38,6 +43,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
@@ -270,6 +276,12 @@ fun LocalMeshView(
     val hub = MaterialTheme.colorScheme.onSurface
     val spoke = MaterialTheme.colorScheme.secondary
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    val progressRotation = rememberInfiniteTransition(label = "mesh progress").animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(tween(1_200, easing = LinearEasing)),
+        label = "mesh progress rotation",
+    ).value
 
     BoxWithConstraints(
         modifier = modifier
@@ -278,7 +290,8 @@ fun LocalMeshView(
             .clip(RoundedCornerShape(24.dp))
             .background(surface),
     ) {
-        val orbit = min(maxWidth.value, maxHeight.value) * 0.34f
+        val orbitX = min(maxWidth.value, maxHeight.value) * 0.34f
+        val orbitY = min(maxWidth.value, maxHeight.value) * 0.27f
         val nodeSize = if (peers.size > 8) 38.dp else 48.dp
         val centreSize = 82.dp
         val offlineLabelWidth = 136.dp
@@ -286,11 +299,12 @@ fun LocalMeshView(
         Canvas(Modifier.matchParentSize()) {
             val centreX = size.width / 2f
             val centreY = size.height / 2f
-            val orbitPx = min(size.width, size.height) * 0.34f
+            val orbitXPx = min(size.width, size.height) * 0.34f
+            val orbitYPx = min(size.width, size.height) * 0.27f
             peers.forEachIndexed { index, peer ->
                 val angle = -PI / 2 + (2 * PI * index / peers.size.coerceAtLeast(1))
-                val x = centreX + cos(angle).toFloat() * orbitPx
-                val y = centreY + sin(angle).toFloat() * orbitPx
+                val x = centreX + cos(angle).toFloat() * orbitXPx
+                val y = centreY + sin(angle).toFloat() * orbitYPx
                 drawLine(
                     color = if (peer.online) spoke.copy(alpha = 0.65f) else line,
                     start = androidx.compose.ui.geometry.Offset(centreX, centreY),
@@ -303,17 +317,40 @@ fun LocalMeshView(
 
         peers.forEachIndexed { index, peer ->
             val angle = -PI / 2 + (2 * PI * index / peers.size.coerceAtLeast(1))
-            val centreX = maxWidth / 2 + (orbit * cos(angle)).dp
-            val centreY = maxHeight / 2 + (orbit * sin(angle)).dp
-            Surface(
+            val centreX = maxWidth / 2 + (orbitX * cos(angle)).dp
+            val centreY = maxHeight / 2 + (orbitY * sin(angle)).dp
+            Box(
                 modifier = Modifier
-                    .offset(centreX - nodeSize / 2, centreY - nodeSize / 2)
-                    .size(nodeSize),
-                color = if (peer.online) spoke else line,
-                shape = CircleShape,
+                    .offset(centreX - nodeSize / 2 - 7.dp, centreY - nodeSize / 2 - 7.dp)
+                    .size(nodeSize + 14.dp),
             ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Text(peer.initials, color = Color.White, style = MaterialTheme.typography.labelLarge)
+                if (peer.syncing) {
+                    Canvas(Modifier.matchParentSize()) {
+                        val inset = 2.dp.toPx()
+                        drawCircle(
+                            color = line.copy(alpha = 0.35f),
+                            radius = size.minDimension / 2f - inset,
+                            style = Stroke(width = 3.dp.toPx()),
+                        )
+                        drawArc(
+                            color = spoke,
+                            startAngle = if (peer.syncProgress == null) progressRotation - 90f else -90f,
+                            sweepAngle = peer.syncProgress?.let { 360f * it.coerceIn(0f, 1f) } ?: 105f,
+                            useCenter = false,
+                            topLeft = androidx.compose.ui.geometry.Offset(inset, inset),
+                            size = androidx.compose.ui.geometry.Size(size.width - inset * 2, size.height - inset * 2),
+                            style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round),
+                        )
+                    }
+                }
+                Surface(
+                    modifier = Modifier.align(Alignment.Center).size(nodeSize),
+                    color = if (peer.online) spoke else line,
+                    shape = CircleShape,
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text(peer.initials, color = Color.White, style = MaterialTheme.typography.labelLarge)
+                    }
                 }
             }
             if (!peer.online) {

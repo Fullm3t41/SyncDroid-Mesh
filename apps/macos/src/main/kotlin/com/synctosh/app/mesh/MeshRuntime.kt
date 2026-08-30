@@ -85,6 +85,7 @@ class MeshRuntime(
     private var meshLanCollector: Job? = null
     private var meshPort: Int? = null
     private val activeSessions = ConcurrentHashMap.newKeySet<String>()
+    private val sessionProgress = ConcurrentHashMap<String, Float>()
     private val automaticallyContactedPeers = ConcurrentHashMap.newKeySet<String>()
     private val lastSessionAtMillis = ConcurrentHashMap<String, Long>()
     private val retiredPeerServers = ConcurrentHashMap.newKeySet<MeshPeerServer>()
@@ -502,8 +503,10 @@ class MeshRuntime(
                     MeshPeer(
                         device.deviceId,
                         device.displayName,
-                        live != null,
+                        live != null || device.deviceId in activeSessions,
                         live?.lastSeenAtMillis ?: device.lastSeenAtMillis,
+                        syncing = device.deviceId in activeSessions,
+                        syncProgress = sessionProgress[device.deviceId],
                     )
                 }
         }.orEmpty()
@@ -552,18 +555,46 @@ class MeshRuntime(
         try {
             val remoteId = StablePeerAuthenticator(store, identity, profile.groupId).authenticate(connection)
             if (!activeSessions.add(remoteId)) return
+            updatePeerSyncState(remoteId)
             try {
                 syncMutex.withLock {
                     var transferred = 0L
+                    var incomingTransferred = 0L
+                    var incomingTotal = 0L
+                    var displayedPercent = -1
                     val startedAt = System.nanoTime()
                     mutableState.value = mutableState.value.copy(status = "Scanning configured folders…")
-                    val result = MeshFileSyncSession(store, identity, profile, updateCache) { bytes ->
-                        transferred += bytes
-                        val seconds = ((System.nanoTime() - startedAt) / 1_000_000_000.0).coerceAtLeast(0.1)
-                        mutableState.value = mutableState.value.copy(
-                            status = "Syncing files · ${formatTransferRate((transferred / seconds).toLong())}",
-                        )
-                    }.run(connection, remoteId)
+                    val result = MeshFileSyncSession(
+                        store = store,
+                        identity = identity,
+                        profile = profile,
+                        updateCache = updateCache,
+                        onBytesTransferred = { bytes ->
+                            transferred += bytes
+                            val seconds = ((System.nanoTime() - startedAt) / 1_000_000_000.0).coerceAtLeast(0.1)
+                            mutableState.value = mutableState.value.copy(
+                                status = "Syncing files · ${formatTransferRate((transferred / seconds).toLong())}",
+                            )
+                        },
+                        onIncomingTransferPlanned = { total ->
+                            incomingTotal = total
+                            displayedPercent = -1
+                            sessionProgress.remove(remoteId)
+                            updatePeerSyncState(remoteId)
+                        },
+                        onIncomingBytesTransferred = { bytes ->
+                            incomingTransferred += bytes
+                            if (incomingTotal > 0L) {
+                                val progress = (incomingTransferred.toDouble() / incomingTotal).toFloat().coerceIn(0f, 1f)
+                                val percent = (progress * 100).toInt()
+                                if (percent != displayedPercent) {
+                                    displayedPercent = percent
+                                    sessionProgress[remoteId] = progress
+                                    updatePeerSyncState(remoteId)
+                                }
+                            }
+                        },
+                    ).run(connection, remoteId)
                     lastSessionAtMillis[remoteId] = System.currentTimeMillis()
                     val conflicts = store.unresolvedConflicts().size
                     refresh(if (conflicts == 0) "Files synced" else "$conflicts file conflict${if (conflicts == 1) "" else "s"} need review")
@@ -577,11 +608,24 @@ class MeshRuntime(
                     }
                 }
             } finally {
+                sessionProgress.remove(remoteId)
                 activeSessions.remove(remoteId)
+                updatePeerSyncState(remoteId)
             }
         } finally {
             stableConnections.remove(connection)
         }
+    }
+
+    private fun updatePeerSyncState(peerId: String) {
+        mutableState.value = mutableState.value.copy(
+            peers = mutableState.value.peers.map { peer ->
+                if (peer.deviceId == peerId) peer.copy(
+                    syncing = peerId in activeSessions,
+                    syncProgress = sessionProgress[peerId],
+                ) else peer
+            },
+        )
     }
 
     private fun connectToAvailablePeers(

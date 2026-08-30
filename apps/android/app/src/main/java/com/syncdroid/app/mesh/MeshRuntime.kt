@@ -17,6 +17,7 @@ import java.io.Closeable
 import java.time.ZonedDateTime
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -44,6 +45,8 @@ sealed interface MeshRuntimeEvent {
         val peerId: String,
         val peerName: String,
         val bytesPerSecond: Long,
+        val transferredBytes: Long,
+        val totalBytes: Long,
     ) : MeshRuntimeEvent
     data class SyncCompleted(
         val peerId: String,
@@ -304,21 +307,38 @@ class MeshRuntime(
             ?: connection.peer.deviceId.take(8)
         try {
             onEvent(MeshRuntimeEvent.SyncStarted(connection.peer.deviceId, peerName))
-            val rateSampler = TransferRateSampler { bytesPerSecond ->
+            val incomingTransferred = AtomicLong(0L)
+            val incomingTotal = AtomicLong(0L)
+            val currentRate = AtomicLong(0L)
+            fun publishTransferProgress() {
                 onEvent(MeshRuntimeEvent.TransferProgress(
                     connection.peer.deviceId,
                     peerName,
-                    bytesPerSecond,
+                    currentRate.get(),
+                    incomingTransferred.get(),
+                    incomingTotal.get(),
                 ))
             }
+            val rateSampler = TransferRateSampler { bytesPerSecond ->
+                currentRate.set(bytesPerSecond)
+                publishTransferProgress()
+            }
             val result = MeshSyncSession(
-                appContext,
-                database,
-                identity,
-                groupId,
-                groupName,
-                updateCache,
-                rateSampler::record,
+                context = appContext,
+                database = database,
+                identity = identity,
+                groupId = groupId,
+                groupName = groupName,
+                updateCache = updateCache,
+                onBytesTransferred = rateSampler::record,
+                onIncomingTransferPlanned = { totalBytes ->
+                    incomingTotal.set(totalBytes)
+                    publishTransferProgress()
+                },
+                onIncomingBytesTransferred = { bytes ->
+                    incomingTransferred.addAndGet(bytes)
+                    publishTransferProgress()
+                },
             ).run(connection)
             lastSessionAtMillis[connection.peer.deviceId] = System.currentTimeMillis()
             if (result.appliedChangeCount > 0 || result.replicatedStateChanged) {

@@ -458,6 +458,8 @@ fun SyncDroidApp(openFoldersRequest: Int = 0) {
                 online = online,
                 initials = device.displayName.initials(),
                 lastOnlineAtMillis = device.lastSeenAtMillis,
+                syncing = device.deviceId in activeSyncPeerIds,
+                syncProgress = syncServiceSnapshot.peerSyncProgress[device.deviceId],
             )
         }
     val currentWifiSsid = wifiConnection.ssid.takeIf { wifiConnection.isWifiConnected }

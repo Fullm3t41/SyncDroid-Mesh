@@ -15,6 +15,8 @@ data class MeshPeer(
     val name: String,
     val online: Boolean,
     val lastOnlineAtMillis: Long? = null,
+    val syncing: Boolean = false,
+    val syncProgress: Float? = null,
 ) {
     val initials: String = name
         .trim()

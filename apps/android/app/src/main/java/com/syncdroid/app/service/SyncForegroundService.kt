@@ -58,6 +58,7 @@ class SyncForegroundService : Service() {
     private var pendingReconcileForce = false
     private val activePeers = linkedMapOf<String, String>()
     private val peerTransferRates = linkedMapOf<String, Long>()
+    private val peerTransferProgress = linkedMapOf<String, MeshRuntimeEvent.TransferProgress>()
     private var statusTitle = "Starting background sync"
     private var statusDetail = "Checking Wi-Fi and mesh settings"
 
@@ -143,6 +144,7 @@ class SyncForegroundService : Service() {
             status = "Background sync stopped",
             activePeerIds = emptySet(),
             onlinePeerIds = emptySet(),
+            peerSyncProgress = emptyMap(),
         )
         super.onDestroy()
     }
@@ -183,6 +185,7 @@ class SyncForegroundService : Service() {
             runtime = null
             activePeers.clear()
             peerTransferRates.clear()
+            peerTransferProgress.clear()
 
             when {
                 !permissionGranted -> {
@@ -296,16 +299,19 @@ class SyncForegroundService : Service() {
             is MeshRuntimeEvent.SyncStarted -> {
                 activePeers[event.peerId] = event.peerName
                 peerTransferRates.remove(event.peerId)
+                peerTransferProgress.remove(event.peerId)
                 showActiveSyncStatus()
             }
             is MeshRuntimeEvent.TransferProgress -> {
                 activePeers[event.peerId] = event.peerName
                 peerTransferRates[event.peerId] = event.bytesPerSecond
+                peerTransferProgress[event.peerId] = event
                 showActiveSyncStatus()
             }
             is MeshRuntimeEvent.SyncCompleted -> {
                 activePeers.remove(event.peerId)
                 peerTransferRates.remove(event.peerId)
+                peerTransferProgress.remove(event.peerId)
                 SyncStatusStore(this).recordSuccessfulSync(event.folderIds)
                 val currentStorageWarning = event.storageWarning
                     ?: SyncServiceController.snapshot.value.storageWarning
@@ -326,6 +332,7 @@ class SyncForegroundService : Service() {
             is MeshRuntimeEvent.SyncFailed -> {
                 activePeers.remove(event.peerId)
                 peerTransferRates.remove(event.peerId)
+                peerTransferProgress.remove(event.peerId)
                 if (activePeers.isEmpty()) {
                     setStatus("Sync needs attention", "${event.peerName}: ${event.reason}")
                 } else {
@@ -418,13 +425,33 @@ class SyncForegroundService : Service() {
         ) "Looking for mesh devices" else statusTitle
         getSystemService(android.app.NotificationManager::class.java).notify(
             SyncServiceNotification.NOTIFICATION_ID,
-            notification.build(foregroundTitle, foregroundDetail, policy),
+            notification.build(
+                foregroundTitle,
+                foregroundDetail,
+                policy,
+                syncing = activePeers.isNotEmpty(),
+                progress = aggregateTransferProgress(),
+            ),
         )
         SyncServiceController.report(
             running = true,
             status = foregroundTitle,
             activePeerIds = activePeers.keys.toSet(),
+            peerSyncProgress = activePeers.keys.associateWith { peerId ->
+                peerTransferProgress[peerId]?.progressFraction()
+            },
         )
+    }
+
+    private fun aggregateTransferProgress(): Float? {
+        if (activePeers.isEmpty()) return null
+        val progress = activePeers.keys.map { peerTransferProgress[it] ?: return null }
+        if (progress.any { it.totalBytes <= 0L }) return null
+        val totalBytes = progress.sumOf(MeshRuntimeEvent.TransferProgress::totalBytes)
+        if (totalBytes <= 0L) return null
+        return (progress.sumOf(MeshRuntimeEvent.TransferProgress::transferredBytes).toDouble() / totalBytes)
+            .toFloat()
+            .coerceIn(0f, 1f)
     }
 
     private fun formatTime(timeMillis: Long): String =
@@ -455,3 +482,8 @@ private fun <T> nextValue(current: T, values: List<T>): T {
     val index = values.indexOf(current)
     return values[(if (index < 0) 0 else index + 1) % values.size]
 }
+
+private fun MeshRuntimeEvent.TransferProgress.progressFraction(): Float? =
+    totalBytes.takeIf { it > 0L }?.let { total ->
+        (transferredBytes.toDouble() / total).toFloat().coerceIn(0f, 1f)
+    }
