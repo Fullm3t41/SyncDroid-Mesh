@@ -65,3 +65,34 @@ compose.desktop {
         }
     }
 }
+
+// jpackage's disk-image icon is separate from the application bundle icon.
+// Apply the canonical app icon inside the DMG so it survives release uploads.
+abstract class BrandDmg : DefaultTask() {
+    @get:InputDirectory
+    abstract val images: DirectoryProperty
+    @get:InputFile
+    abstract val icon: RegularFileProperty
+    @get:InputFile
+    abstract val script: RegularFileProperty
+    @get:javax.inject.Inject
+    abstract val execOperations: org.gradle.process.ExecOperations
+
+    @TaskAction
+    fun brand() {
+        images.get().asFile.listFiles { file -> file.extension == "dmg" }!!.forEach { image ->
+            execOperations.exec {
+                commandLine("/bin/bash", script.get().asFile.absolutePath,
+                    image.absolutePath, icon.get().asFile.absolutePath)
+            }
+        }
+    }
+}
+
+val brandDmg by tasks.registering(BrandDmg::class) {
+    images.set(layout.buildDirectory.dir("compose/binaries/main/dmg"))
+    icon.set(layout.projectDirectory.file("src/main/resources/icons/synctosh.icns"))
+    script.set(layout.projectDirectory.file("installer/brand-dmg.sh"))
+    onlyIf { images.get().asFile.isDirectory }
+}
+tasks.matching { it.name == "packageDmg" }.configureEach { finalizedBy(brandDmg) }

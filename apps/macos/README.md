@@ -56,3 +56,29 @@ SyncTosh uses two mutually exclusive mesh-runtime modes:
 ```bash
 ./gradlew packageDmg
 ```
+
+## Desktop updates
+
+The in-app update action installs the verified DMG into the running app's existing
+location and reopens SyncTosh. The app must be installed in a writable Applications
+folder (not running from a mounted disk image). The detached helper waits for the
+UI and worker to exit, validates the incoming bundle identity, stages a complete
+copy beside the existing app, and swaps the bundles. A failed swap or launch
+restores the old bundle. User data and synced folders are never part of the swap.
+Failures show a dialog with the helper log path.
+
+The full release artifact is still downloaded; this change streamlines installation,
+not download size. Versions predating this updater use their existing manual DMG
+flow once to install the new updater. First-time installs still use the DMG.
+
+`packageDmg` embeds the canonical `synctosh.icns` as the mounted volume icon as
+well as the app icon. The volume branding survives uploading/downloading the DMG.
+Run `python3 -m unittest discover -s installer/tests -v` from this directory to
+exercise staging, rejection, and rollback with isolated filesystem fixtures.
+
+Before launching the update helper, the foreground app disables discovery and new
+connections and waits for its active sessions and synchronization lock to drain.
+The UI displays “Preparing update” during this wait. Only after the runtime closes
+does it start the helper and quit the worker; it does not hand control back to a
+background sync. A failed drain prevents both installer launch and update shutdown.
+The helper's process-exit timeout therefore does not limit the transfer drain time.

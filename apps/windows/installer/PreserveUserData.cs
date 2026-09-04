@@ -46,10 +46,10 @@ internal static class PreserveUserData
 
             if (!string.IsNullOrWhiteSpace(installPath))
                 ValidateInstallPath(installPath, localAppData, source, destination);
+            if (!skipProcessWait && !WaitForSyncDowsToExit(TimeSpan.FromSeconds(120)))
+                throw new TimeoutException("SyncDows did not close in time. Quit it from the notification area and run the installer again.");
             if (!Directory.Exists(source) || PathsEqual(source, destination))
                 return 0;
-            if (!skipProcessWait && !WaitForSyncDowsToExit(TimeSpan.FromSeconds(60)))
-                throw new TimeoutException("SyncDows did not close in time. Close it and run the installer again.");
 
             Directory.CreateDirectory(destination);
             foreach (string fileName in PersistentFiles)
