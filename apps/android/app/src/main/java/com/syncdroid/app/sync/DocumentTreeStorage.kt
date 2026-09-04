@@ -15,6 +15,7 @@ interface SyncFileApplier {
 class DocumentTreeFileApplier(
     private val context: Context,
     treeUri: Uri,
+    private val expectedContent: com.syncdroid.shared.sync.ExpectedFileContent? = null,
 ) : SyncFileApplier {
     private val root = requireNotNull(DocumentFile.fromTreeUri(context, treeUri)) { "Folder permission is unavailable" }
 
@@ -47,8 +48,18 @@ class DocumentTreeFileApplier(
             }
             val actual = digest.digest().toHex()
             require(actual.equals(expectedSha256, true)) { "Received file hash does not match its manifest" }
-            parent.findFile(name)?.let { require(it.isFile && it.delete()) { "Could not replace existing document" } }
-            require(temporary.renameTo(name)) { "The document provider could not move the synced file into place" }
+            val original = findChild(parent, name)
+            require(original == null || original.isFile) { "The destination is no longer a file" }
+            expectedContent?.verify(original?.let {
+                requireNotNull(context.contentResolver.openInputStream(it.uri)) {
+                    "Could not verify the local file before replacement"
+                }.buffered().use(FileHasher::sha256)
+            })
+            com.syncdroid.shared.sync.replaceDocumentRecoverably(
+                original, temporary, name, ".syncdroid-backup-${UUID.randomUUID()}",
+                rename = { document, destinationName -> document.renameTo(destinationName) },
+                delete = DocumentFile::delete,
+            )
         } finally {
             if (temporary.exists() && temporary.name == temporaryName) temporary.delete()
         }
@@ -62,10 +73,16 @@ class DocumentTreeFileApplier(
         context.contentResolver.openInputStream(it.uri)
     }
 
+    private fun findChild(parent: DocumentFile, name: String): DocumentFile? {
+        val matches = context.readSyncChildren(parent).filter { it.name == name }
+        require(matches.size <= 1) { "The document provider returned duplicate file names" }
+        return matches.singleOrNull()
+    }
+
     private fun ensureDirectory(parts: List<String>): DocumentFile {
         var current = root
         parts.forEach { name ->
-            current = current.findFile(name)?.also { require(it.isDirectory) { "$name is not a folder" } }
+            current = findChild(current, name)?.also { require(it.isDirectory) { "$name is not a folder" } }
                 ?: requireNotNull(current.createDirectory(name)) { "Could not create folder $name" }
         }
         return current
@@ -73,7 +90,7 @@ class DocumentTreeFileApplier(
 
     private fun find(parts: List<String>): DocumentFile? {
         var current = root
-        parts.forEach { name -> current = current.findFile(name) ?: return null }
+        parts.forEach { name -> current = findChild(current, name) ?: return null }
         return current
     }
 

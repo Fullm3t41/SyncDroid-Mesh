@@ -38,8 +38,8 @@ class DocumentTreeScanner(context: Context) {
         parentPath: String,
         destination: MutableSet<String>,
     ) {
-        directory.listFiles().forEach { child ->
-            val name = child.name?.takeIf(String::isNotBlank) ?: return@forEach
+        appContext.readSyncChildren(directory).forEach { child ->
+            val name = requireNotNull(child.name?.takeIf(String::isNotBlank)) { "Could not read a document name" }
             val relativePath = if (parentPath.isEmpty()) name else "$parentPath/$name"
             when {
                 child.isDirectory -> collectRelativeFilePaths(child, relativePath, destination)
@@ -55,10 +55,10 @@ class DocumentTreeScanner(context: Context) {
         excludedRelativePaths: Set<String>,
         destination: MutableList<FileManifestEntry>,
     ) {
-        directory.listFiles()
+        appContext.readSyncChildren(directory)
             .sortedWith(compareBy<DocumentFile>({ !it.isDirectory }, { it.name.orEmpty().lowercase() }))
             .forEach { child ->
-                val name = child.name?.takeIf { it.isNotBlank() } ?: return@forEach
+                val name = requireNotNull(child.name?.takeIf(String::isNotBlank)) { "Could not read a document name" }
                 val relativePath = if (parentPath.isEmpty()) name else "$parentPath/$name"
                 when {
                     child.isDirectory -> scanChildren(child, relativePath, rules, excludedRelativePaths, destination)

@@ -22,7 +22,10 @@ object FileTransferWireCodec {
         com.syncdroid.shared.protocol.FileTransferWireCodec.decode(bytes)
 }
 
-class AtomicFileApplier(rootDirectory: Path) {
+class AtomicFileApplier(
+    rootDirectory: Path,
+    private val expectedContent: com.syncdroid.shared.sync.ExpectedFileContent? = null,
+) {
     private val root = rootDirectory.toAbsolutePath().normalize().also {
         require(Files.isDirectory(it)) { "Configured sync folder is unavailable" }
     }
@@ -49,6 +52,12 @@ class AtomicFileApplier(rootDirectory: Path) {
             require(digest.digest().toHex().equals(expectedSha256, true)) {
                 "Received file hash does not match its manifest"
             }
+            expectedContent?.verify(
+                if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
+                    require(Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS) && !Files.isSymbolicLink(target))
+                    Files.newInputStream(target).buffered().use(::sha256Hex)
+                } else null,
+            )
             try {
                 Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
             } catch (_: AtomicMoveNotSupportedException) {

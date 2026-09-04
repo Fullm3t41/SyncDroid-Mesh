@@ -48,6 +48,8 @@ class DesktopCloudSync(
         onProgress = status,
     )
 
+    suspend fun stopAndDrain() = orchestrator.stopAndDrain()
+
     fun accounts(): List<CloudAccountStatus> = CloudProvider.entries.map { provider ->
         CloudAccountStatus(provider, CloudOAuthConfiguration.configured(provider) != null, oauth.connected(provider))
     }
@@ -125,7 +127,7 @@ class DesktopCloudSync(
                                         key, plan.remote.fileId, plan.remote.contentSha256, encryptedFile, plaintext,
                                     )
                                     Files.newInputStream(plaintext).use { input ->
-                                        AtomicFileApplier(root).apply(
+                                        AtomicFileApplier(root, plan.expectedContent()).apply(
                                             plan.relativePath, input, plan.remote.contentSha256, plan.remote.modifiedAtMillis,
                                         )
                                     }

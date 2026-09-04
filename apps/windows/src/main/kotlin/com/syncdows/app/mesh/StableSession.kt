@@ -118,7 +118,7 @@ class MeshFileSyncSession(
                 plan.action == FileSyncAction.DownloadRemote && !plan.remote.deleted && root != null
             }
             val missingBlocks = manifest?.let {
-                ResumableBlockReceiver(store, transferCache(), AtomicFileApplier(root!!)).missingBlocks(it)
+                ResumableBlockReceiver(store, transferCache(), AtomicFileApplier(root!!, plan.expectedContent())).missingBlocks(it)
             }.orEmpty()
             val requestCount = when {
                 plan.action != FileSyncAction.DownloadRemote || plan.remote.deleted || root == null -> 0
@@ -212,7 +212,7 @@ class MeshFileSyncSession(
                         acknowledgementBlocked += folderId
                         return@forEach
                     }
-                    val applier = AtomicFileApplier(root)
+                    val applier = AtomicFileApplier(root, plan.expectedContent())
                     val localBefore = store.fileVersion(folderId, plan.remote.relativePath)
                     if (plan.remote.deleted) {
                         if (localBefore != null && !localBefore.deleted) {

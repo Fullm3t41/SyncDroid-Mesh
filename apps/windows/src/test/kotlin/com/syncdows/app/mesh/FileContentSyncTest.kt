@@ -8,6 +8,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
@@ -77,6 +78,25 @@ class FileContentSyncTest {
                 syncOnce(firstStore, firstIdentity, profile, secondStore, secondIdentity, secondProfile)
                 assertContentEquals(byteArrayOf(9, 8, 7, 6, 5), Files.readAllBytes(firstFile))
                 assertTrue(secondStore.fileHistory().any { it.action == FileHistoryAction.RECOVERED })
+
+                // Exercise both whole-file and resumable downloads after the receiving peer scanned.
+                for (relativePath in listOf("nested/slot.sav", "large.sav")) {
+                    val source = firstFolder.resolve(relativePath)
+                    val target = secondFolder.resolve(relativePath)
+                    val remoteEdit = if (relativePath == "large.sav") ByteArray(2 * 1024 * 1024) { 73 } else byteArrayOf(73)
+                    Files.write(source, remoteEdit)
+                    val localEdit = "edited while the remote version was downloading".toByteArray()
+                    assertFailsWith<IllegalStateException> {
+                        syncOnce(firstStore, firstIdentity, profile, secondStore, secondIdentity, secondProfile,
+                            beforeSecondDownload = { Files.write(target, localEdit) })
+                    }
+                    assertContentEquals(localEdit, Files.readAllBytes(target))
+                    val receiver = FileSyncEngine(secondStore, secondIdentity, secondProfile)
+                    receiver.scanConfiguredFolders()
+                    val sender = FileSyncEngine(firstStore, firstIdentity, profile)
+                    val plans = receiver.receiveIndexes(firstIdentity.deviceId, listOf(requireNotNull(sender.buildFullUpdate(folder.folderId))))
+                    assertEquals(FileSyncAction.Conflict, plans.first { it.relativePath == relativePath }.action)
+                }
             }
         }
     }
@@ -185,6 +205,7 @@ class FileContentSyncTest {
         secondStore: MeshStore,
         secondIdentity: WindowsDeviceIdentity,
         secondProfile: MeshProfile,
+        beforeSecondDownload: () -> Unit = {},
     ) {
         val serverDone = CompletableDeferred<Unit>()
         val server = MeshPeerServer(DeviceTlsContext(firstIdentity, allowUnknownPeer = true)) { connection ->
@@ -200,7 +221,9 @@ class FileContentSyncTest {
                 .connect(InetAddress.getLoopbackAddress(), port)
                 .use { connection ->
                     val remote = StablePeerAuthenticator(secondStore, secondIdentity, secondProfile.groupId).authenticate(connection)
-                    MeshFileSyncSession(secondStore, secondIdentity, secondProfile).run(connection, remote)
+                    MeshFileSyncSession(secondStore, secondIdentity, secondProfile,
+                        onIncomingTransferPlanned = { if (it > 0) beforeSecondDownload() },
+                    ).run(connection, remote)
                 }
             withTimeout(15_000) { serverDone.await() }
         } finally {

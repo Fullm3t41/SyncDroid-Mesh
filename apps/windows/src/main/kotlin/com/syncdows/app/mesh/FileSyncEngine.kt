@@ -24,6 +24,10 @@ data class FileSyncPlan(
     val conflictResolution: PendingConflictResolution? = null,
 )
 
+internal fun FileSyncPlan.expectedContent() = com.syncdroid.shared.sync.ExpectedFileContent(
+    local?.takeIf { !it.deleted && it.relativePath == relativePath }?.contentSha256,
+)
+
 fun decideFileSync(local: FileVersion?, remote: RemoteFileVersion): Pair<FileSyncAction, String> {
     val decision = decideSharedFileSync(
         local = local?.let { FileSyncState(it.deleted, it.contentSha256, it.previousContentSha256, it.version) },
@@ -113,6 +117,11 @@ class FileSyncEngine(
             }
             require(store.folders(profile.groupId, identity.deviceId).any { it.folderId == update.folderId }) {
                 "Peer sent an index for another mesh"
+            }
+            val localPaths = store.fileVersions(update.folderId).filterNot { it.deleted }.map { it.relativePath }
+            val spellings = (localPaths + update.files.map { it.relativePath }).groupBy { it.lowercase(java.util.Locale.ROOT) }
+            require(spellings.values.none { it.distinct().size > 1 }) {
+                "File names differ only by capitalization. Rename the conflicting files to use the same spelling on every device before syncing."
             }
             require(store.acceptRemoteIndex(remoteDeviceId, update)) { "A full index is required" }
             val localByPath = store.fileVersions(update.folderId).associateBy(FileVersion::relativePath)

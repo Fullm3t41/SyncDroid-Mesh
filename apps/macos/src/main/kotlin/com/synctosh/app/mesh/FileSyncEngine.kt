@@ -22,6 +22,10 @@ data class FileSyncPlan(
     val remoteManifest: BlockManifest?,
 )
 
+internal fun FileSyncPlan.expectedContent() = com.syncdroid.shared.sync.ExpectedFileContent(
+    local?.takeIf { !it.deleted && it.relativePath == relativePath }?.contentSha256,
+)
+
 fun decideFileSync(local: FileVersion?, remote: RemoteFileVersion): Pair<FileSyncAction, String> {
     val decision = decideSharedFileSync(
         local = local?.let { FileSyncState(it.deleted, it.contentSha256, it.previousContentSha256, it.version) },
@@ -104,6 +108,19 @@ class FileSyncEngine(
             validateFolderIndexUpdate(update)
             require(store.folders(profile.groupId, identity.deviceId).any { it.folderId == update.folderId }) {
                 "Peer sent an index for another mesh"
+            }
+            val localPaths = store.fileVersions(update.folderId).filterNot { it.deleted }.map { it.relativePath }
+            val root = configuredRoot(update.folderId)
+            val localSpellings = localPaths.groupBy { it.lowercase(java.util.Locale.ROOT) }
+            val aliases = update.files.any { file ->
+                localSpellings[file.relativePath.lowercase(java.util.Locale.ROOT)].orEmpty().any { localPath ->
+                    localPath != file.relativePath && root != null &&
+                        Files.exists(root.resolve(file.relativePath)) &&
+                        Files.isSameFile(root.resolve(localPath), root.resolve(file.relativePath))
+                }
+            }
+            require(!aliases) {
+                "File names differ only by capitalization. Rename the conflicting files to use the same spelling on every device before syncing."
             }
             require(store.acceptRemoteIndex(remoteDeviceId, update)) { "A full index is required" }
             val localByPath = store.fileVersions(update.folderId).associateBy(FileVersion::relativePath)

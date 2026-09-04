@@ -162,6 +162,9 @@ class MeshRuntime(
     /** Stops accepting new work, then preserves any authenticated transfer until it completes. */
     suspend fun closeAfterActiveTransfers() {
         windowForeground = false
+        setDiscoveryActive(false)
+        // Cloud runs use their own mutex. Finish them before cancelling their scheduling job.
+        cloud.stopAndDrain()
         backgroundScheduleJob?.cancel()
         backgroundScheduleJob = null
         setDiscoveryActive(false)

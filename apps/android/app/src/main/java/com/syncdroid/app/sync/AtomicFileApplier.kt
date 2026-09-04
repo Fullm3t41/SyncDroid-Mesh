@@ -9,7 +9,10 @@ import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 import java.util.UUID
 
-class AtomicFileApplier(private val rootDirectory: File) : SyncFileApplier {
+class AtomicFileApplier(
+    private val rootDirectory: File,
+    private val expectedContent: com.syncdroid.shared.sync.ExpectedFileContent? = null,
+) : SyncFileApplier {
     private val root: File = rootDirectory.canonicalFile.also {
         require(it.isDirectory || it.mkdirs()) { "Could not create sync root" }
     }
@@ -41,6 +44,12 @@ class AtomicFileApplier(private val rootDirectory: File) : SyncFileApplier {
             }
             val actual = digest.digest().joinToString("") { "%02x".format(it) }
             require(actual.equals(expectedSha256, ignoreCase = true)) { "Received file hash does not match its manifest" }
+            expectedContent?.verify(
+                if (target.exists()) {
+                    require(target.isFile) { "Sync destination is no longer a file" }
+                    target.inputStream().buffered().use(FileHasher::sha256)
+                } else null,
+            )
             moveIntoPlace(temporary, target)
             if (sourceModifiedAtMillis != null && sourceModifiedAtMillis > 0) {
                 target.setLastModified(sourceModifiedAtMillis)

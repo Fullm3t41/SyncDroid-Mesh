@@ -104,7 +104,14 @@ object CloudEncryptedObjects {
             output.write(FILE_MAGIC)
             output.write(nonce)
             val cipher = fileCipher(Cipher.ENCRYPT_MODE, key, fileId, contentSha256, nonce)
-            javax.crypto.CipherOutputStream(output, cipher).use { encrypted -> Files.newInputStream(source).use { it.copyTo(encrypted) } }
+            val digest = java.security.MessageDigest.getInstance("SHA-256")
+            javax.crypto.CipherOutputStream(output, cipher).use { encrypted ->
+                java.security.DigestInputStream(Files.newInputStream(source), digest).use { it.copyTo(encrypted) }
+            }
+            val actualHash = digest.digest().joinToString("") { "%02x".format(it) }
+            require(actualHash.equals(contentSha256, true)) {
+                "File changed after scanning; cloud upload was cancelled. Sync again to upload the current version."
+            }
         }
     }
 
