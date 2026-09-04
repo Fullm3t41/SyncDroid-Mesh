@@ -8,7 +8,7 @@ class DirectFolderScanner {
     fun listRelativeFilePaths(rootDirectory: File): Set<String> {
         val root = rootDirectory.canonicalFile
         require(root.isDirectory) { "Sync root is not a readable directory" }
-        return root.walkTopDown()
+        return root.walkTopDown().onFail { _, error -> throw error }
             .filter(File::isFile)
             .map { file ->
                 val safeFile = file.canonicalFile
@@ -26,7 +26,7 @@ class DirectFolderScanner {
         val root = rootDirectory.canonicalFile
         require(root.isDirectory) { "Sync root is not a readable directory" }
 
-        return root.walkTopDown()
+        return root.walkTopDown().onFail { _, error -> throw error }
             .filter { it.isFile }
             .map { file ->
                 val safeFile = file.canonicalFile

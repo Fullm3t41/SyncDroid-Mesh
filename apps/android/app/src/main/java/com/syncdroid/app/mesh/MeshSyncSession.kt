@@ -280,7 +280,7 @@ class MeshSyncSession(
                 PreparedDownload(plan, null, 0, 0L)
             } else {
                 val binding = syncDao.getBinding(plan.remote.folderId, identity.deviceId)
-                val applier = binding?.fileApplierOrNull()
+                val applier = binding?.fileApplierOrNull(plan)
                 if (applier == null) {
                     PreparedDownload(plan, null, 0, 0L)
                 } else {
@@ -334,7 +334,7 @@ class MeshSyncSession(
                 }
                 FileSyncAction.DownloadRemote -> {
                     val binding = syncDao.getBinding(folderId, identity.deviceId)
-                    val applier = binding?.fileApplierOrNull()
+                    val applier = binding?.fileApplierOrNull(plan)
                     if (applier == null) {
                         acknowledgementBlocked += folderId
                         continue
@@ -436,12 +436,15 @@ class MeshSyncSession(
         applier,
     )
 
-    private fun LocalFolderBindingEntity.fileApplierOrNull(): SyncFileApplier? {
+    private fun LocalFolderBindingEntity.fileApplierOrNull(plan: FileSyncPlan): SyncFileApplier? {
+        val expected = com.syncdroid.shared.sync.ExpectedFileContent(
+            plan.local?.takeIf { !it.deleted && it.relativePath == plan.relativePath }?.contentSha256,
+        )
         val location = configuredLocationOrNull() ?: return null
         return if (location.startsWith("content://", true)) {
-            runCatching { DocumentTreeFileApplier(appContext, Uri.parse(location)) }.getOrNull()
+            runCatching { DocumentTreeFileApplier(appContext, Uri.parse(location), expected) }.getOrNull()
         } else {
-            File(location).takeIf(File::isDirectory)?.let(::AtomicFileApplier)
+            File(location).takeIf(File::isDirectory)?.let { AtomicFileApplier(it, expected) }
         }
     }
 

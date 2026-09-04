@@ -35,8 +35,15 @@ class CloudTransferOrchestrator(
     private val onProgress: (String) -> Unit = {},
 ) {
     private val mutex = Mutex()
+    @Volatile private var stopping = false
+
+    suspend fun stopAndDrain() {
+        stopping = true
+        mutex.withLock { /* Wait for the admitted run to finish. */ }
+    }
 
     suspend fun run(trigger: CloudSyncTrigger): CloudTransferResult = mutex.withLock {
+        if (stopping) return@withLock CloudTransferResult()
         val currentPolicy = policy()
         if (currentPolicy.scope == CloudSyncScope.DISABLED) return@withLock CloudTransferResult()
         val folders = folderIds().filter(currentPolicy::isEnabledFor)
