@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -53,10 +52,6 @@ import com.syncdows.app.model.MeshPeer
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import kotlin.math.PI
-import kotlin.math.cos
-import kotlin.math.min
-import kotlin.math.sin
 
 @Composable
 fun SectionLabel(text: String) {
@@ -283,125 +278,102 @@ fun LocalMeshView(
         label = "mesh progress rotation",
     ).value
 
-    BoxWithConstraints(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(350.dp)
+    androidx.compose.ui.layout.SubcomposeLayout(
+        modifier = modifier.fillMaxWidth()
             .clip(RoundedCornerShape(24.dp))
             .background(surface),
-    ) {
-        val orbitX = min(maxWidth.value, maxHeight.value) * 0.34f
-        val orbitY = min(maxWidth.value, maxHeight.value) * 0.27f
-        val nodeSize = if (peers.size > 8) 38.dp else 48.dp
-        val centreSize = 82.dp
-        val offlineLabelWidth = 136.dp
-
-        Canvas(Modifier.matchParentSize()) {
-            val centreX = size.width / 2f
-            val centreY = size.height / 2f
-            val orbitXPx = min(size.width, size.height) * 0.34f
-            val orbitYPx = min(size.width, size.height) * 0.27f
-            peers.forEachIndexed { index, peer ->
-                val angle = -PI / 2 + (2 * PI * index / peers.size.coerceAtLeast(1))
-                val x = centreX + cos(angle).toFloat() * orbitXPx
-                val y = centreY + sin(angle).toFloat() * orbitYPx
-                drawLine(
-                    color = if (peer.online) spoke.copy(alpha = 0.65f) else line,
-                    start = androidx.compose.ui.geometry.Offset(centreX, centreY),
-                    end = androidx.compose.ui.geometry.Offset(x, y),
-                    strokeWidth = if (peer.online) 2.5.dp.toPx() else 1.5.dp.toPx(),
-                    pathEffect = if (peer.online) null else PathEffect.dashPathEffect(floatArrayOf(7f, 6f)),
-                )
-            }
-        }
-
-        peers.forEachIndexed { index, peer ->
-            val angle = -PI / 2 + (2 * PI * index / peers.size.coerceAtLeast(1))
-            val centreX = maxWidth / 2 + (orbitX * cos(angle)).dp
-            val centreY = maxHeight / 2 + (orbitY * sin(angle)).dp
-            Box(
-                modifier = Modifier
-                    .offset(centreX - nodeSize / 2 - 7.dp, centreY - nodeSize / 2 - 7.dp)
-                    .size(nodeSize + 14.dp),
+    ) { constraints ->
+        val width = constraints.maxWidth
+        val padding = minOf(20.dp.roundToPx(), width / 4)
+        val gap = 24.dp.roundToPx()
+        val nodeWidth = minOf(156.dp.roundToPx(), (width - padding * 2).coerceAtLeast(1))
+        val nodes = subcompose("devices") {
+            Column(
+                Modifier.combinedClickable(onClick = {}, onLongClick = onRenameCurrentDevice),
+                horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                if (peer.syncing) {
-                    Canvas(Modifier.matchParentSize()) {
-                        val inset = 2.dp.toPx()
-                        drawCircle(
-                            color = line.copy(alpha = 0.35f),
-                            radius = size.minDimension / 2f - inset,
-                            style = Stroke(width = 3.dp.toPx()),
-                        )
-                        drawArc(
-                            color = spoke,
-                            startAngle = if (peer.syncProgress == null) progressRotation - 90f else -90f,
-                            sweepAngle = peer.syncProgress?.let { 360f * it.coerceIn(0f, 1f) } ?: 105f,
-                            useCenter = false,
-                            topLeft = androidx.compose.ui.geometry.Offset(inset, inset),
-                            size = androidx.compose.ui.geometry.Size(size.width - inset * 2, size.height - inset * 2),
-                            style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round),
-                        )
-                    }
-                }
                 Surface(
-                    modifier = Modifier.align(Alignment.Center).size(nodeSize),
-                    color = if (peer.online) spoke else line,
+                    modifier = Modifier.size(82.dp),
+                    color = hub,
                     shape = CircleShape,
+                    border = androidx.compose.foundation.BorderStroke(3.dp, spoke),
                 ) {
                     Box(contentAlignment = Alignment.Center) {
-                        Text(peer.initials, color = Color.White, style = MaterialTheme.typography.labelLarge)
+                        Text(currentDevice.trim().split(Regex("\\s+"))
+                            .filter(String::isNotBlank).take(2)
+                            .joinToString("") { it.first().uppercase() }.ifBlank { "?" },
+                            color = MaterialTheme.colorScheme.surface,
+                            style = MaterialTheme.typography.titleLarge)
                     }
                 }
+                Spacer(Modifier.height(8.dp))
+                Text(currentDevice, style = MaterialTheme.typography.titleSmall,
+                    textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().background(surface))
+                Text("This device", style = MaterialTheme.typography.bodySmall,
+                    color = muted, textAlign = TextAlign.Center, modifier = Modifier.background(surface))
             }
-            if (!peer.online) {
-                Text(
-                    peer.lastOnlineAtMillis.lastOnlineLabel(),
-                    modifier = Modifier
-                        .offset(centreX - offlineLabelWidth / 2, centreY + nodeSize / 2 + 5.dp)
-                        .width(offlineLabelWidth),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = muted,
-                    textAlign = TextAlign.Center,
-                )
+            peers.forEach { peer ->
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Box(Modifier.size(62.dp), contentAlignment = Alignment.Center) {
+                        if (peer.syncing) {
+                            Canvas(Modifier.matchParentSize()) {
+                                val inset = 2.dp.toPx()
+                                drawCircle(color = line.copy(alpha = 0.35f),
+                                    radius = size.minDimension / 2f - inset,
+                                    style = Stroke(width = 3.dp.toPx()))
+                                drawArc(color = spoke,
+                                    startAngle = if (peer.syncProgress == null) progressRotation - 90f else -90f,
+                                    sweepAngle = peer.syncProgress?.let { 360f * it.coerceIn(0f, 1f) } ?: 105f,
+                                    useCenter = false,
+                                    topLeft = androidx.compose.ui.geometry.Offset(inset, inset),
+                                    size = androidx.compose.ui.geometry.Size(size.width - inset * 2, size.height - inset * 2),
+                                    style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round))
+                            }
+                        }
+                        Surface(Modifier.size(48.dp), color = if (peer.online) spoke else line, shape = CircleShape) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(peer.initials, color = Color.White, style = MaterialTheme.typography.labelLarge)
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Text(peer.name, style = MaterialTheme.typography.titleSmall,
+                        textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().background(surface))
+                    val detail = when {
+                        peer.syncing -> peer.syncProgress?.let { "Syncing ${(it.coerceIn(0f, 1f) * 100).toInt()}%" } ?: "Syncing…"
+                        peer.online -> "Online"
+                        else -> peer.lastOnlineAtMillis.lastOnlineLabel()
+                    }
+                    Text(detail, style = MaterialTheme.typography.labelSmall,
+                        color = muted, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().background(surface))
+                }
             }
-        }
-
-        Column(
-            modifier = Modifier
-                .align(Alignment.Center)
-                .combinedClickable(onClick = {}, onLongClick = onRenameCurrentDevice),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Surface(
-                modifier = Modifier.size(centreSize),
-                color = hub,
-                shape = CircleShape,
-                border = androidx.compose.foundation.BorderStroke(3.dp, spoke),
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Text(
-                        currentDevice.nodeLabel(),
-                        color = if (MaterialTheme.colorScheme.onSurface == hub) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.background,
-                        style = MaterialTheme.typography.labelLarge,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.padding(8.dp),
+        }.map { it.measure(androidx.compose.ui.unit.Constraints.fixedWidth(nodeWidth)) }
+        val plan = planMeshMap(width, nodeWidth, nodes.map { it.height }, padding, gap, 420.dp.roundToPx())
+        val canvas = subcompose("connections") {
+            Canvas(Modifier) {
+                val local = plan.positions[0]
+                val origin = androidx.compose.ui.geometry.Offset(local.x + nodeWidth / 2f, local.y + 41.dp.toPx())
+                peers.forEachIndexed { index, peer ->
+                    val position = plan.positions[index + 1]
+                    drawLine(
+                        color = if (peer.online) spoke.copy(alpha = 0.65f) else line,
+                        start = origin,
+                        end = androidx.compose.ui.geometry.Offset(position.x + nodeWidth / 2f, position.y + 31.dp.toPx()),
+                        strokeWidth = if (peer.online) 2.5.dp.toPx() else 1.5.dp.toPx(),
+                        pathEffect = if (peer.online) null else PathEffect.dashPathEffect(floatArrayOf(7f, 6f)),
                     )
                 }
             }
-            Spacer(Modifier.height(7.dp))
-            Text("This device", style = MaterialTheme.typography.bodyMedium, color = muted)
+        }.single().measure(androidx.compose.ui.unit.Constraints.fixed(width, plan.height))
+        layout(width, plan.height) {
+            canvas.place(0, 0)
+            nodes.forEachIndexed { index, node ->
+                val position = plan.positions[index]
+                node.place(position.x, position.y)
+            }
         }
     }
-}
-
-private fun String.nodeLabel(): String {
-    val clean = trim().replace(Regex("\\s+"), " ")
-    if (clean.length <= 16) return clean
-    val middleSpace = clean.indices
-        .filter { clean[it] == ' ' }
-        .minByOrNull { kotlin.math.abs(it - clean.length / 2) }
-    return if (middleSpace == null) clean.take(15) + "…"
-    else clean.substring(0, middleSpace) + "\n" + clean.substring(middleSpace + 1).take(16)
 }
 
 private fun Long?.lastOnlineLabel(): String {

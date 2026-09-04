@@ -258,6 +258,7 @@ fun SyncToshApp(
                                     MacFolderPicker.chooseChatAttachment()?.let(runtime::sendChatAttachment)
                                 },
                                 onDropFiles = runtime::sendChatAttachments,
+                                attachmentPath = runtime::chatAttachmentPath,
                                 onOpenAttachment = { message ->
                                     runCatching {
                                         val path = requireNotNull(runtime.chatAttachmentPath(message.messageId)) {
