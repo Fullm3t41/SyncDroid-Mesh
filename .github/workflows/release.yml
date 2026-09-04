@@ -246,6 +246,7 @@ jobs:
               jq -n --arg tree "$tree" --arg version "$GITHUB_REF_NAME" \
                 '{message: ("Publish updater metadata for " + $version), tree: $tree, parents: []}'
             fi \
+              | jq '. + {author: {name: "Fullm3t41", email: "1888303+Fullm3t41@users.noreply.github.com"}, committer: {name: "Fullm3t41", email: "1888303+Fullm3t41@users.noreply.github.com"}}' \
               | gh api --method POST "$repo/git/commits" --input - --jq .sha
           )"
 
