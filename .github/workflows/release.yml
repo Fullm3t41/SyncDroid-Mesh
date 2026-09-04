@@ -57,6 +57,7 @@ jobs:
         shell: bash
         run: |
           version="${GITHUB_REF_NAME#v}"
+          python3 -m unittest discover -s apps/macos/installer/tests -v
           cd apps/macos
           ./gradlew --no-daemon clean test packageDmg
           dmg="$(find build/compose/binaries/main/dmg -name '*.dmg' -type f -print -quit)"

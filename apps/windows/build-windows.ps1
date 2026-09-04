@@ -19,6 +19,8 @@ if (-not (Test-Path -LiteralPath $csharpCompiler)) {
     throw "The Windows .NET Framework C# compiler was not found at $csharpCompiler"
 }
 
+& (Join-Path $PSScriptRoot "installer\tests\Test-UpdateInstaller.ps1") -Compiler $csharpCompiler
+
 $uninstallerSource = Join-Path $PSScriptRoot "installer\UninstallSyncDows.cs"
 $uninstaller = Join-Path $bundleBuildDirectory "Uninstall SyncDows.exe"
 & $csharpCompiler /nologo /target:winexe /optimize+ /reference:System.Windows.Forms.dll `
@@ -89,6 +91,20 @@ $bundleSource = Join-Path $PSScriptRoot "installer\SyncDowsBundle.wxs"
 $themeFile = Join-Path $PSScriptRoot "installer\theme\SyncDowsTheme.xml"
 $localizationFile = Join-Path $PSScriptRoot "installer\theme\SyncDowsTheme.wxl"
 $logoFile = Join-Path $PSScriptRoot "installer\theme\logo.png"
+# Keep the setup artwork identical to the application/tray source.
+Add-Type -AssemblyName System.Drawing
+$logoSource = [System.Drawing.Image]::FromFile((Join-Path $PSScriptRoot "..\..\design\icon\syncdows-icon-source.png"))
+$logoBitmap = New-Object System.Drawing.Bitmap 68, 68
+$logoGraphics = [System.Drawing.Graphics]::FromImage($logoBitmap)
+try {
+    $logoGraphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+    $logoGraphics.DrawImage($logoSource, 0, 0, 68, 68)
+    $logoBitmap.Save($logoFile, [System.Drawing.Imaging.ImageFormat]::Png)
+} finally {
+    $logoGraphics.Dispose()
+    $logoBitmap.Dispose()
+    $logoSource.Dispose()
+}
 $uninstallerPackageSource = Join-Path $PSScriptRoot "installer\SyncDowsUninstaller.wxs"
 $uninstallerPackageObject = Join-Path $bundleBuildDirectory "SyncDowsUninstaller.wixobj"
 $uninstallerPackage = Join-Path $bundleBuildDirectory "SyncDowsUninstaller.msi"

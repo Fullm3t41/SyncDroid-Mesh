@@ -5,8 +5,8 @@
   <String Id="Subtitle">PRIVATE LOCAL MESH SYNC</String>
   <String Id="LoadingHeader">Preparing SyncDows</String>
   <String Id="LoadingText">Checking the current installation and getting setup ready.</String>
-  <String Id="InstallHeader">Ready to install</String>
-  <String Id="InstallMessage">Install the self-contained Windows peer for your SyncDroid-Mesh network. No separate Java installation is required.</String>
+  <String Id="InstallHeader">Install or update SyncDows</String>
+  <String Id="InstallMessage">Update your existing installation or set up SyncDows on this PC. Updates keep your settings, paired devices and synced folders.</String>
   <String Id="InstallVersion">Version [WixBundleVersion]</String>
   <String Id="ConfirmCancelMessage">Cancel SyncDows setup?</String>
   <String Id="ExecuteUpgradeRelatedBundleMessage">Previous SyncDows version</String>
@@ -16,7 +16,7 @@
   <String Id="InstallLicenseLinkText"></String>
   <String Id="InstallAcceptCheckbox"></String>
   <String Id="InstallOptionsButton">&amp;Options</String>
-  <String Id="InstallInstallButton">&amp;Install</String>
+  <String Id="InstallInstallButton">&amp;Install / update</String>
   <String Id="InstallCloseButton">&amp;Close</String>
   <String Id="OptionsHeader">Installation options</String>
   <String Id="OptionsLocationLabel">Install SyncDows in:</String>

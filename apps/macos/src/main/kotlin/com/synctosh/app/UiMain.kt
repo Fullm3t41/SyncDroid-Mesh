@@ -14,6 +14,7 @@ import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
+import com.syncdroid.shared.update.handOffDesktopUpdate
 import com.syncdroid.shared.update.LastUpdateCheckStore
 import com.syncdroid.shared.update.ReleaseUpdateService
 import com.syncdroid.shared.update.UpdatePlatform
@@ -56,6 +57,7 @@ internal fun runSyncToshUi(args: Array<String>) {
         var discoveryWindow by remember { mutableLongStateOf(preferences.discoveryWindowSeconds) }
         var alwaysOnDiscovery by remember { mutableStateOf(preferences.alwaysOnDiscovery) }
         var windowVisible by remember { mutableStateOf(true) }
+        var preparingUpdate by remember { mutableStateOf(false) }
         val windowState = rememberWindowState(
             position = WindowPosition.Aligned(androidx.compose.ui.Alignment.Center),
             width = preferences.windowWidth.dp,
@@ -64,6 +66,7 @@ internal fun runSyncToshUi(args: Array<String>) {
         val appIcon = painterResource("icons/synctosh.png")
 
         fun stopUi() {
+            if (preparingUpdate) return
             if (!stopped.compareAndSet(false, true)) return
             val windowWidth = windowState.size.width.value
             val windowHeight = windowState.size.height.value
@@ -116,8 +119,40 @@ internal fun runSyncToshUi(args: Array<String>) {
                 onAlwaysOnDiscoveryChanged = ::updateAlwaysOnDiscovery,
                 onCloseToNotificationBar = ::stopUi,
                 updateService = updateService,
-                onInstallUpdate = MacUpdateInstaller::open,
+                onInstallUpdate = { installer ->
+                    if (!preparingUpdate) {
+                        preparingUpdate = true
+                        uiScope.launch {
+                            runCatching {
+                                handOffDesktopUpdate(
+                                    drainSync = { withContext(Dispatchers.IO) { meshRuntime.closeAfterActiveTransfers() } },
+                                    launchInstaller = { MacUpdateInstaller.open(installer) },
+                                    quitApplication = {
+                                        stopped.set(true)
+                                        // The foreground runtime is now closed; do not send UI_CLOSED,
+                                        // which would start a fresh background sync during the update.
+                                        workerEndpoint?.send(WorkerCommand.QUIT)
+                                        exitApplication()
+                                    },
+                                )
+                            }.onFailure { error ->
+                                preparingUpdate = false
+                                javax.swing.JOptionPane.showMessageDialog(null,
+                                    "The update was not started. Restart the app before syncing again.\n" + error.message,
+                                    "Update could not start", javax.swing.JOptionPane.ERROR_MESSAGE)
+                            }
+                        }
+                    }
+                },
             )
+            if (preparingUpdate) {
+                androidx.compose.material3.AlertDialog(
+                    onDismissRequest = {},
+                    title = { androidx.compose.material3.Text("Preparing update") },
+                    text = { androidx.compose.material3.Text("Waiting for active syncs to finish. The app will update and reopen automatically.") },
+                    confirmButton = {},
+                )
+            }
         }
 
         androidx.compose.runtime.DisposableEffect(Unit) {
