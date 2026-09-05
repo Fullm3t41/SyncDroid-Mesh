@@ -1,0 +1,48 @@
+name: SyncDeck Linux preview
+on:
+  push:
+    branches: [preview/syncdeck-installer]
+  workflow_dispatch:
+  pull_request:
+    paths: ['apps/linux/**', 'shared/**', '.github/workflows/syncdeck-linux.yml']
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Test and package Linux x64
+        run: bash apps/linux/installer/package.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: syncdeck-linux-preview
+          path: |
+            apps/linux/build/release/*.run
+            apps/linux/build/release/SHA256SUMS.txt
+  decky:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Test and build Decky plugin
+        working-directory: apps/linux/decky
+        run: |
+          npm ci --ignore-scripts
+          npm run typecheck
+          npm run build
+          python3 -m unittest discover -s tests
+          mkdir -p build/SyncDeck
+          cp -r dist main.py plugin.json package.json LICENSE build/SyncDeck/
+          cd build
+          zip -r SyncDeck-decky-preview.zip SyncDeck
+      - uses: actions/upload-artifact@v4
+        with:
+          name: syncdeck-decky-preview
+          path: apps/linux/decky/build/*.zip

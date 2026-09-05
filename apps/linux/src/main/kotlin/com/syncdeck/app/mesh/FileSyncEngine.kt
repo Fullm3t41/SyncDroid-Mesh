@@ -1,0 +1,439 @@
+package com.syncdeck.app.mesh
+
+import com.syncdroid.shared.sync.FileSyncState
+import com.syncdroid.shared.sync.decideFileSync as decideSharedFileSync
+import com.syncdroid.shared.sync.normalizeRelativePath
+import com.syncdroid.shared.sync.planIndexExport
+import com.syncdroid.shared.sync.validateFolderIndexUpdate
+import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.Path
+import java.security.MessageDigest
+import java.security.SecureRandom
+import java.util.UUID
+import kotlin.io.path.invariantSeparatorsPathString
+
+data class ManagedFile(
+    val relativePath: String,
+    val lastSyncedAtMillis: Long?,
+    val sourceDeviceName: String,
+    val onThisDevice: Boolean,
+)
+
+data class FileSyncPlan(
+    val action: FileSyncAction,
+    val relativePath: String,
+    val local: FileVersion?,
+    val remote: RemoteFileVersion,
+    val reason: String,
+    val remoteManifest: BlockManifest?,
+)
+
+internal fun FileSyncPlan.expectedContent() = com.syncdroid.shared.sync.ExpectedFileContent(
+    local?.takeIf { !it.deleted && it.relativePath == relativePath }?.contentSha256,
+)
+
+fun decideFileSync(local: FileVersion?, remote: RemoteFileVersion): Pair<FileSyncAction, String> {
+    require(!remote.purgeRecovery || remote.deleted) { "Recovery purge requires a deletion" }
+    if (remote.purgeRecovery && local?.deleted != false && local?.purgeRecovery != true &&
+        (local == null || local.version.relationTo(remote.version) != com.syncdroid.shared.protocol.CausalRelation.After)) {
+        return FileSyncAction.DownloadRemote to "Removing recovery copies for a permanent deletion"
+    }
+    val decision = decideSharedFileSync(
+        local = local?.let { FileSyncState(it.deleted, it.contentSha256, it.previousContentSha256, it.version) },
+        remote = FileSyncState(remote.deleted, remote.contentSha256, remote.previousContentSha256, remote.version),
+    )
+    return decision.action to decision.reason
+}
+
+class FileSyncEngine(
+    private val store: MeshStore,
+    private val identity: LinuxDeviceIdentity,
+    private val profile: MeshProfile,
+) {
+    private val history = FileHistoryRepository(store, identity.deviceId)
+
+    fun scanConfiguredFolders(recordHistory: Boolean = true) {
+        store.configuredFolders(profile.groupId, identity.deviceId).forEach { scanFolder(it, recordHistory) }
+    }
+
+    fun managedFiles(folderId: String): List<ManagedFile> {
+        val folder = requireNotNull(store.configuredFolders(profile.groupId, identity.deviceId).find { it.folderId == folderId })
+        scanFolder(folder, true)
+        val root = requireNotNull(configuredRoot(folderId))
+        val names = store.devices(profile.groupId).associate { it.deviceId to it.displayName }
+        return store.fileVersions(folderId).filterNot { it.deleted }.sortedBy { it.relativePath }.map {
+            ManagedFile(it.relativePath, store.lastSyncedAt(it), names[it.originDeviceId] ?: it.originDeviceId.ifBlank { "Unknown device" },
+                Files.isRegularFile(root.resolve(it.relativePath)))
+        }
+    }
+
+    fun allowFileSyncAgain(folderId: String, relativePath: String) {
+        val root = requireNotNull(configuredRoot(folderId))
+        val path = normalizedRelativePath(relativePath)
+        if (!Files.exists(root.resolve(path))) store.resetExcludedFile(folderId, path, identity.deviceId)
+        store.recordSyncException(folderId, path, active = false, signer = identity)
+    }
+
+    fun deleteFromThisDevice(folderId: String, relativePath: String) {
+        val root = requireNotNull(configuredRoot(folderId))
+        val file = requireNotNull(store.fileVersion(folderId, normalizedRelativePath(relativePath)))
+        require(!file.deleted && Files.isRegularFile(root.resolve(file.relativePath))) { "This file is not on this device" }
+        val wasExcluded = store.localActiveSyncException(folderId, file.relativePath, identity.deviceId)
+        store.recordSyncException(folderId, file.relativePath, active = true, signer = identity)
+        try { history.deleteWithRecovery(root, file, identity.deviceId) }
+        catch (error: Exception) {
+            if (!wasExcluded && Files.exists(root.resolve(file.relativePath))) {
+                store.recordSyncException(folderId, file.relativePath, active = false, signer = identity)
+            }
+            throw error
+        }
+        val state = requireNotNull(store.folderIndexState(folderId, identity.deviceId))
+        store.saveLocalIndex(emptyList(), state.copy(indexEpoch = randomEpoch()))
+    }
+
+    /** Explicit deletion bypasses overwrite-only scanning and retains a versioned tombstone. */
+    fun deleteFromAllDevices(folderId: String, paths: List<String>, permanent: Boolean = false) {
+        val root = requireNotNull(configuredRoot(folderId)) { "Folder is not configured" }
+        require(Files.isDirectory(root)) { "Folder is unavailable" }
+        require(paths.isNotEmpty()) { "Select a file" }
+        val selected = paths.distinct().map { path ->
+            requireNotNull(store.fileVersion(folderId, normalizedRelativePath(path))) { "Sync this file before deleting it" }
+        }.filterNot { it.deleted }
+        selected.forEach { version ->
+            val state = requireNotNull(store.folderIndexState(folderId, identity.deviceId))
+            val now = System.currentTimeMillis()
+            if (permanent) history.deletePermanently(root, version)
+            else if (Files.exists(root.resolve(version.relativePath))) history.deleteWithRecovery(root, version, identity.deviceId, now)
+            val sequence = state.maxSequence + 1
+            store.saveLocalIndex(listOf(version.copy(sizeBytes = 0, modifiedAtMillis = now,
+                contentSha256 = "", previousContentSha256 = version.contentSha256, deleted = true,
+                version = version.version.increment(identity.deviceId), originDeviceId = identity.deviceId,
+                localSequence = sequence, purgeRecovery = permanent)), state.copy(maxSequence = sequence, metadataReceivedSequence = sequence,
+                contentAppliedSequence = sequence, updatedAtMillis = now))
+        }
+    }
+
+    fun buildCatalog(remoteDeviceId: String): List<FolderClock> =
+        store.folders(profile.groupId, identity.deviceId).mapNotNull { folder ->
+            val local = store.folderIndexState(folder.folderId, identity.deviceId) ?: return@mapNotNull null
+            val knownPeer = store.folderIndexState(folder.folderId, remoteDeviceId)
+            FolderClock(
+                folder.folderId,
+                local.indexEpoch,
+                local.maxSequence,
+                knownPeer?.indexEpoch ?: 0,
+                knownPeer?.metadataReceivedSequence ?: 0,
+                knownPeer?.contentAppliedSequence ?: 0,
+            )
+        }
+
+    fun buildUpdatesForPeer(remoteCatalog: List<FolderClock>): List<FolderIndexUpdate> {
+        val peerByFolder = remoteCatalog.associateBy(FolderClock::folderId)
+        return store.folders(profile.groupId, identity.deviceId).mapNotNull { folder ->
+            val local = store.folderIndexState(folder.folderId, identity.deviceId) ?: return@mapNotNull null
+            val root = configuredRoot(folder.folderId) ?: return@mapNotNull null
+            val peer = peerByFolder[folder.folderId]
+            val range = planIndexExport(
+                local.indexEpoch,
+                local.maxSequence,
+                peer?.knownPeerIndexEpoch,
+                peer?.knownPeerReceivedSequence,
+            ) ?: return@mapNotNull null
+            val versions = (if (range.fullIndex) store.fileVersions(folder.folderId) else {
+                store.fileVersionsAfter(folder.folderId, range.previousSequence)
+            }).sortedBy(FileVersion::localSequence)
+            require(versions.size <= MAX_INDEX_FILES) { "Folder index is too large for one session" }
+            FolderIndexUpdate(
+                folder.folderId,
+                local.indexEpoch,
+                range.previousSequence,
+                range.lastSequence,
+                range.fullIndex,
+                versions.filter { it.deleted || !store.localActiveSyncException(folderId = it.folderId, relativePath = it.relativePath, deviceId = identity.deviceId) }.map { it.toIndexedRecord(root) },
+            )
+        }
+    }
+
+    fun buildFullUpdate(folderId: String): FolderIndexUpdate? {
+        val folder = store.folders(profile.groupId, identity.deviceId).firstOrNull { it.folderId == folderId } ?: return null
+        val root = configuredRoot(folderId) ?: return null
+        val local = store.folderIndexState(folderId, identity.deviceId) ?: return null
+        val versions = store.fileVersions(folderId).sortedBy(FileVersion::localSequence)
+        require(versions.size <= MAX_INDEX_FILES) { "Folder index is too large for one cloud manifest" }
+        return FolderIndexUpdate(
+            folder.folderId,
+            local.indexEpoch,
+            0,
+            local.maxSequence,
+            true,
+            versions.filter { it.deleted || !store.localActiveSyncException(folderId = it.folderId, relativePath = it.relativePath, deviceId = identity.deviceId) }.map { it.toIndexedRecord(root) },
+        )
+    }
+
+    fun receiveIndexes(remoteDeviceId: String, updates: List<FolderIndexUpdate>, pendingFolderIds: Set<String>? = null): List<FileSyncPlan> {
+        val plans = mutableListOf<FileSyncPlan>()
+        updates.forEach { update ->
+            validateFolderIndexUpdate(update)
+            require(store.folders(profile.groupId, identity.deviceId).any { it.folderId == update.folderId }) {
+                "Peer sent an index for another mesh"
+            }
+            val localPaths = store.fileVersions(update.folderId).filterNot { it.deleted }.map { it.relativePath }
+            val root = configuredRoot(update.folderId)
+            val localSpellings = localPaths.groupBy { it.lowercase(java.util.Locale.ROOT) }
+            val aliases = update.files.any { file ->
+                localSpellings[file.relativePath.lowercase(java.util.Locale.ROOT)].orEmpty().any { localPath ->
+                    localPath != file.relativePath && root != null &&
+                        Files.exists(root.resolve(file.relativePath)) &&
+                        Files.isSameFile(root.resolve(localPath), root.resolve(file.relativePath))
+                }
+            }
+            require(!aliases) {
+                "File names differ only by capitalization. Rename the conflicting files to use the same spelling on every device before syncing."
+            }
+            require(store.acceptRemoteIndex(remoteDeviceId, update)) { "A full index is required" }
+            val localByPath = store.fileVersions(update.folderId).associateBy(FileVersion::relativePath)
+            update.files.map { it.toRemote(update.folderId, remoteDeviceId) }.forEach { remote ->
+                val local = localByPath[remote.relativePath]
+                val (action, reason) = if (
+                    !remote.deleted &&
+                    store.localActiveSyncException(remote.folderId, remote.relativePath, identity.deviceId)
+                ) {
+                    FileSyncAction.Nothing to "This device has an active overwrite-only exception"
+                } else {
+                    decideFileSync(local, remote)
+                }
+                if (action == FileSyncAction.Conflict) store.recordConflict(local, remote)
+                plans += FileSyncPlan(action, remote.relativePath, local, remote, reason, store.remoteBlockManifest(remote))
+            }
+        }
+        val receivedKeys = plans.mapTo(mutableSetOf()) { it.key() }
+        store.folders(profile.groupId, identity.deviceId).filter { pendingFolderIds == null || it.folderId in pendingFolderIds }.forEach { folder ->
+            store.pendingRemoteVersions(folder.folderId, remoteDeviceId).forEach { remote ->
+                val key = "${remote.folderId}\u0000${remote.relativePath}\u0000${remote.remoteSequence}"
+                if (key in receivedKeys) return@forEach
+                val local = store.fileVersion(folder.folderId, remote.relativePath)
+                val (action, reason) = if (
+                    !remote.deleted &&
+                    store.localActiveSyncException(remote.folderId, remote.relativePath, identity.deviceId)
+                ) {
+                    FileSyncAction.Nothing to "This device has an active overwrite-only exception"
+                } else {
+                    decideFileSync(local, remote)
+                }
+                if (action == FileSyncAction.Conflict) store.recordConflict(local, remote)
+                plans += FileSyncPlan(action, remote.relativePath, local, remote, reason, store.remoteBlockManifest(remote))
+            }
+        }
+        return plans.sortedWith(compareBy({ it.remote.folderId }, { it.remote.remoteSequence }))
+    }
+
+    fun configuredRoot(folderId: String): Path? = store.configuredFolders(profile.groupId, identity.deviceId)
+        .firstOrNull { it.folderId == folderId }
+        ?.localPath
+        ?.let(Path::of)
+        ?.takeIf(Files::isDirectory)
+
+    fun markRemoteApplied(remoteDeviceId: String, remote: RemoteFileVersion, acknowledge: Boolean) {
+        store.markRemoteApplied(remote, remoteDeviceId, identity.deviceId, acknowledge)
+    }
+
+    private fun scanFolder(folder: MeshFolder, recordHistory: Boolean) {
+        val root = Path.of(requireNotNull(folder.localPath)).toAbsolutePath().normalize()
+        require(Files.isDirectory(root)) { "Configured folder is unavailable: ${folder.displayName}" }
+        val scanned = scanFiles(root, folder.includePatterns, folder.excludePatterns)
+        val previous = store.fileVersions(folder.folderId).associateBy(FileVersion::relativePath)
+        val priorState = store.folderIndexState(folder.folderId, identity.deviceId)
+        val state = priorState ?: FolderIndexState(
+            folder.folderId,
+            identity.deviceId,
+            randomEpoch(),
+            0,
+            0,
+            0,
+            System.currentTimeMillis(),
+        )
+        var nextSequence = state.maxSequence
+        var changed = false
+        val updated = linkedMapOf<String, FileVersion>()
+        val historyChanges = mutableListOf<Pair<FileHistoryAction, FileVersion>>()
+        scanned.forEach { file ->
+            val old = previous[file.relativePath]
+            val unchanged = old != null && !old.deleted && old.sizeBytes == file.sizeBytes &&
+                old.contentSha256.equals(file.sha256, true)
+            updated[file.relativePath] = if (unchanged) old else {
+                changed = true
+                nextSequence++
+                FileVersion(
+                    folder.folderId,
+                    file.relativePath,
+                    old?.fileId ?: UUID.randomUUID().toString(),
+                    file.sizeBytes,
+                    file.modifiedAtMillis,
+                    file.sha256,
+                    old?.contentSha256?.takeIf(String::isNotBlank),
+                    false,
+                    (old?.version ?: VersionVector()).increment(identity.deviceId),
+                    identity.deviceId,
+                    nextSequence,
+                ).also { current ->
+                    historyChanges += (if (old == null || old.deleted) FileHistoryAction.ADDED else FileHistoryAction.UPDATED) to current
+                }
+            }
+        }
+        val scannedPaths = scanned.mapTo(mutableSetOf(), ScannedFile::relativePath)
+        previous.forEach { (path, old) ->
+            if (path in scannedPaths) return@forEach
+            updated[path] = if (old.deleted || store.localActiveSyncException(folder.folderId, path, identity.deviceId)) old else {
+                changed = true
+                nextSequence++
+                old.copy(
+                    sizeBytes = 0,
+                    modifiedAtMillis = System.currentTimeMillis(),
+                    contentSha256 = "",
+                    previousContentSha256 = old.contentSha256.takeIf(String::isNotBlank),
+                    deleted = true,
+                    version = old.version.increment(identity.deviceId),
+                    originDeviceId = identity.deviceId,
+                    localSequence = nextSequence,
+                ).also { historyChanges += FileHistoryAction.DELETED to old }
+            }
+        }
+        if (changed || priorState == null) {
+            val now = System.currentTimeMillis()
+            store.saveLocalIndex(
+                updated.values.toList(),
+                state.copy(
+                    maxSequence = nextSequence,
+                    metadataReceivedSequence = nextSequence,
+                    contentAppliedSequence = nextSequence,
+                    updatedAtMillis = now,
+                ),
+            )
+            if (recordHistory) historyChanges.forEach { (action, version) ->
+                if (action == FileHistoryAction.DELETED) history.recordDetectedDeletion(version, now)
+                else history.recordChange(action, version, identity.deviceId, now)
+            }
+        }
+    }
+
+    private fun FileVersion.toIndexedRecord(root: Path): IndexedFileRecord {
+        val manifest = if (!deleted && sizeBytes >= BlockManifestBuilder.RESUMABLE_THRESHOLD_BYTES) {
+            store.localBlockManifest(this) ?: BlockManifestBuilder.build(this, root.resolve(relativePath)).also {
+                store.storeLocalBlockManifest(it)
+            }
+        } else null
+        return IndexedFileRecord(
+            relativePath,
+            fileId,
+            sizeBytes,
+            modifiedAtMillis,
+            contentSha256,
+            previousContentSha256,
+            originDeviceId,
+            deleted,
+            version,
+            localSequence,
+            blockSizeBytes = manifest?.blockSizeBytes ?: 0,
+            blocks = manifest?.blocks ?: emptyList(),
+            purgeRecovery = purgeRecovery,
+        )
+    }
+
+    private companion object {
+        const val MAX_INDEX_FILES = 50_000
+    }
+}
+
+private data class ScannedFile(val relativePath: String, val sizeBytes: Long, val modifiedAtMillis: Long, val sha256: String)
+
+private fun scanFiles(root: Path, includes: List<String>, excludes: List<String>): List<ScannedFile> {
+    val rootReal = root.toRealPath()
+    return Files.walk(rootReal).use { paths ->
+        paths.filter { path ->
+            Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS) && !Files.isSymbolicLink(path)
+        }.map { path ->
+            val real = path.toRealPath(LinkOption.NOFOLLOW_LINKS)
+            require(real.startsWith(rootReal)) { "Folder contains a file outside its root" }
+            rootReal.relativize(real).invariantSeparatorsPathString to real
+        }.filter { (relativePath) -> shouldSync(relativePath, includes, excludes) }
+            .map { (relativePath, path) -> stableFile(relativePath, path) }
+            .sorted(compareBy(ScannedFile::relativePath))
+            .toList()
+    }
+}
+
+private fun stableFile(relativePath: String, path: Path): ScannedFile {
+    repeat(2) {
+        val size = Files.size(path)
+        val modified = Files.getLastModifiedTime(path).toMillis()
+        val hash = Files.newInputStream(path).buffered().use(::sha256Hex)
+        if (size == Files.size(path) && modified == Files.getLastModifiedTime(path).toMillis()) {
+            return ScannedFile(relativePath, size, modified, hash)
+        }
+    }
+    error("File changed repeatedly while it was being scanned: $relativePath")
+}
+
+private fun shouldSync(relativePath: String, includes: List<String>, excludes: List<String>): Boolean {
+    if (excludes.any { globMatches(it, relativePath) }) return false
+    return includes.isEmpty() || includes.any { globMatches(it, relativePath) }
+}
+
+private fun globMatches(rawPattern: String, path: String): Boolean {
+    val pattern = rawPattern.trim().replace('\\', '/')
+    if (pattern.isEmpty()) return false
+    val target = if ('/' in pattern) path else path.substringAfterLast('/')
+    val regex = buildString {
+        append('^')
+        var index = 0
+        while (index < pattern.length) {
+            when (val char = pattern[index]) {
+                '*' -> if (index + 1 < pattern.length && pattern[index + 1] == '*') {
+                    append(".*"); index++
+                } else append("[^/]*")
+                '?' -> append("[^/]")
+                '.', '(', ')', '[', ']', '$', '^', '{', '}', '+', '|', '\\' -> append("\\$char")
+                else -> append(char)
+            }
+            index++
+        }
+        append('$')
+    }
+    return Regex(regex, RegexOption.IGNORE_CASE).matches(target)
+}
+
+fun normalizedRelativePath(path: String): String {
+    return normalizeRelativePath(path)
+}
+
+fun sha256Hex(input: java.io.InputStream): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+    while (true) {
+        val count = input.read(buffer)
+        if (count < 0) break
+        if (count > 0) digest.update(buffer, 0, count)
+    }
+    return digest.digest().joinToString("") { "%02x".format(it) }
+}
+
+internal fun IndexedFileRecord.toRemote(folderId: String, deviceId: String) = RemoteFileVersion(
+    folderId,
+    deviceId,
+    normalizedRelativePath(relativePath),
+    fileId,
+    sizeBytes,
+    modifiedAtMillis,
+    contentSha256.lowercase(),
+    previousContentSha256?.lowercase(),
+    originDeviceId,
+    deleted,
+    version,
+    sequence,
+    purgeRecovery,
+)
+
+private fun FileSyncPlan.key() = "${remote.folderId}\u0000${remote.relativePath}\u0000${remote.remoteSequence}"
+
+private fun randomEpoch(): Long = (SecureRandom().nextLong() and Long.MAX_VALUE).coerceAtLeast(1)

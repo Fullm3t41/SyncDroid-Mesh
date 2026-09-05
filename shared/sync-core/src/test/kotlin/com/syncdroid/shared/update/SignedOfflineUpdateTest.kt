@@ -21,6 +21,20 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class SignedOfflineUpdateTest {
+    @Test fun linuxAssetIsOptionalForOldSeedsAndVerifiedWhenPresent() = runBlocking {
+        val keys = KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()
+        val publicKey = Base64.getEncoder().encodeToString(keys.public.encoded)
+        val root = Files.createTempDirectory("linux-offline-compatibility")
+        try {
+            val seed = service(root.resolve("cache"), UpdatePlatform.LinuxX64, publicKey)
+            assertEquals("1.2.1", seed.importOfflineBundle(signedBundle(root, "1.2.1", keys)))
+            assertEquals("1.2.1", seed.seedState.value.version)
+            assertEquals("1.2.2", seed.importOfflineBundle(signedBundle(root, "1.2.2", keys, includeLinux = true)))
+            assertEquals("1.2.2", seed.seedState.value.version)
+            assertTrue(seed.availableAssets().any { it.platformId == "linux-x64" })
+        } finally { root.toFile().deleteRecursively() }
+    }
+
     @Test fun newerOnlineManifestDoesNotDisplaceCompleteSeedAcrossRestart() = runBlocking {
         val keys = KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()
         val publicKey = Base64.getEncoder().encodeToString(keys.public.encoded)
@@ -249,12 +263,13 @@ class SignedOfflineUpdateTest {
         root: java.nio.file.Path,
         version: String,
         keyPair: java.security.KeyPair,
+        includeLinux: Boolean = false,
     ): java.nio.file.Path {
         val files = mapOf(
             UpdatePlatform.Android to ("SyncDroid-Mesh-$version-Android.apk" to byteArrayOf(1)),
             UpdatePlatform.MacOsArm64 to ("SyncTosh-$version-macOS-arm64.dmg" to byteArrayOf(2)),
             UpdatePlatform.WindowsX64 to ("SyncDows-$version-Windows-x64.exe" to byteArrayOf(3)),
-        )
+        ) + if (includeLinux) mapOf(UpdatePlatform.LinuxX64 to ("SyncDeck-$version-Linux-x64.tar.gz" to byteArrayOf(4))) else emptyMap()
         val manifest = ReleaseManifest(
             version = version,
             publishedAt = "2026-08-20T00:00:00Z",

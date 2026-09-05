@@ -7,7 +7,10 @@ enum class UpdatePlatform(val id: String) {
     Android("android"),
     MacOsArm64("macos-arm64"),
     WindowsX64("windows-x64"),
+    LinuxX64("linux-x64"),
 }
+
+internal val REQUIRED_RELEASE_PLATFORMS = setOf(UpdatePlatform.Android, UpdatePlatform.MacOsArm64, UpdatePlatform.WindowsX64)
 
 data class ReleaseAsset(
     val platform: UpdatePlatform,

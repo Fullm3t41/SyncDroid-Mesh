@@ -434,7 +434,7 @@ class ReleaseUpdateService(
                 val candidate = SignedReleaseManifest.verify(manifestText, signatureText, trustedPublicKeyBase64)
                 rejectOutdatedOfflineBundle(candidate)
                 validateCandidateVersion(candidate)
-                require(candidate.manifest.assets.map { it.platform }.toSet() == UpdatePlatform.entries.toSet()) {
+                require(candidate.manifest.assets.map { it.platform }.toSet().containsAll(REQUIRED_RELEASE_PLATFORMS)) {
                     "Offline update bundle must contain Android, macOS and Windows releases"
                 }
                 val allowedNames = candidate.manifest.assets.mapTo(mutableSetOf(MANIFEST_FILE, RELEASE_SIGNATURE_FILE)) { it.fileName }
@@ -606,7 +606,7 @@ class ReleaseUpdateService(
         val manifest = candidate.manifest
         val previous = seedManifest?.manifest?.version
         if (previous != null && !isNewerVersion(manifest.version, previous)) return@synchronized
-        if (manifest.assets.map { it.platform }.toSet() != UpdatePlatform.entries.toSet() ||
+        if (!manifest.assets.map { it.platform }.toSet().containsAll(REQUIRED_RELEASE_PLATFORMS) ||
             !manifest.assets.all { isComplete(manifest.version, it) }) return@synchronized
         Files.createDirectories(cacheDirectory)
         writeAtomically(cacheDirectory.resolve("seed-manifest.signed"), candidate.envelopeBytes())

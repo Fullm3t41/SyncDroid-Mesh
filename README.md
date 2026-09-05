@@ -103,7 +103,7 @@ Release downloads are self-contained: SyncDroid-Mesh is provided as an Android A
 
 ## Current scope
 
-The local peer mesh, file transfer engine, resumable blocks, history, recovery, chat and conflict foundations are implemented. Google Drive and OneDrive adapters, broader release hardening, code signing/notarization and SyncDeck remain ongoing work.
+The local peer mesh, file transfer engine, resumable blocks, history, recovery, chat and conflict foundations are implemented. Google Drive and OneDrive adapters, broader release hardening, code signing/notarization and SyncDeck hardware validation remain ongoing work.
 
 ## Licence
 
@@ -118,3 +118,7 @@ On Windows or Mac, expand a folder and choose **Manage files** beside Open in Fi
 The deletion is saved for other configured devices to receive on their next mesh or cloud sync. Off registered Wi-Fi, use **Sync cloud now** to publish or receive it. Independently edited copies become conflicts; they are not silently erased. Deletion recovery copies are retained for 30 days in File history. Cloud storage can retain encrypted obsolete objects until its cleanup grace period expires.
 
 In Android folder contents, **hold the bin icon** to open **Permanently delete from all devices**. Confirming removes the selected working files and SyncDroid recovery copies on participating devices as they sync, without creating new recovery copies. Regular taps retain the recoverable deletion choices. All devices must support this version of the sync message; older apps reject it. Provider-managed cloud backups/trash and independently edited conflicting copies are not silently erased.
+
+### SyncDeck Linux preview
+
+A dedicated Linux desktop app and optional Decky control panel are now in development. Desktop Mode supports a notification-tray worker. In Gaming Mode, background syncing requires the Decky plugin to be enabled. See the [SyncDeck preview setup and limitations](apps/linux/README.md).

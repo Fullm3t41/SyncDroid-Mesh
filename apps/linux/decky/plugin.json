@@ -1,0 +1,13 @@
+{
+  "name": "SyncDeck",
+  "author": "Fullm3t41",
+  "flags": [],
+  "api_version": 1,
+  "publish": {
+    "tags": [
+      "sync",
+      "utility"
+    ],
+    "description": "Control the SyncDeck background sync helper in Gaming Mode."
+  }
+}
