@@ -50,6 +50,8 @@ fun CloudSyncSettingsScreen(
     onFolderChanged: (String, Boolean) -> Unit,
     accounts: List<CloudAccountStatus>,
     busy: Boolean,
+    onSyncNow: () -> Unit,
+    status: String,
     onConnect: (CloudProvider) -> Unit,
     onDisconnect: (CloudProvider) -> Unit,
     onBack: () -> Unit,
@@ -129,8 +131,15 @@ fun CloudSyncSettingsScreen(
                 }
             }
             item {
+                SettingsCard {
+                    SettingsActionRow(Icons.Rounded.Cloud, "Sync cloud now",
+                        "Pull remote changes and push local changes · $status", onSyncNow,
+                        enabled = !busy && policy.scope != CloudSyncScope.DISABLED && accounts.any { it.connected })
+                }
+            }
+            item {
                 SettingsInformationCard(
-                    "Cloud data will live inside SyncDroid/<folder name> and use the same hashes, version history and conflict checks as local peers. Account connection requires Google and Microsoft OAuth registrations before file transfer can be enabled.",
+                    "Already-paired devices can exchange encrypted files through the same cloud account, even on different networks. On unregistered Wi-Fi or mobile internet, use Sync cloud now. Automatic cloud sync runs only on registered Wi-Fi. Superseded uploads are retained for 30 days.",
                 )
             }
         }
@@ -249,7 +258,7 @@ private fun CloudProviderRow(account: CloudAccountStatus, enabled: Boolean, onCl
             Text(account.provider.displayName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Text(
                 when {
-                    !account.configured -> "OAuth client ID required in this build"
+                    !account.configured -> "Sign-in is not available in this build yet"
                     account.connected -> "Connected · select to disconnect"
                     else -> "Select to connect securely in your browser"
                 },

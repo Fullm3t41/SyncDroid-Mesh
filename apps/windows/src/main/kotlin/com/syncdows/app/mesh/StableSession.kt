@@ -170,8 +170,8 @@ class MeshFileSyncSession(
 
     private suspend fun exchangeFolderKeys(connection: AuthenticatedPeerConnection) {
         val keys = DesktopFolderKeyStore(store, identity)
-        val local = store.folders(profile.groupId, identity.deviceId).mapNotNull { folder ->
-            keys.existing(folder.folderId)?.let { SessionFolderKey(it.folderId, it.keyId, it.bytes) }
+        val local = store.folders(profile.groupId, identity.deviceId).flatMap { folder ->
+            keys.all(folder.folderId).map { SessionFolderKey(it.folderId, it.keyId, it.bytes) }
         }
         connection.send(MeshSessionCodec.encode(MeshSessionMessage.FolderKeys(local)))
         val remote = connection.receiveSession<MeshSessionMessage.FolderKeys>()
@@ -211,7 +211,10 @@ class MeshFileSyncSession(
                     val applier = AtomicFileApplier(root, plan.expectedContent())
                     val localBefore = store.fileVersion(folderId, plan.remote.relativePath)
                     if (plan.remote.deleted) {
-                        if (localBefore != null && !localBefore.deleted) {
+                        if (plan.remote.purgeRecovery) {
+                            applier.delete(plan.relativePath)
+                            history.purgeRecoveries(folderId, plan.relativePath)
+                        } else if (localBefore != null && !localBefore.deleted) {
                             history.deleteWithRecovery(
                                 root,
                                 localBefore,

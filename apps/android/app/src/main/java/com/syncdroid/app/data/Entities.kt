@@ -286,6 +286,7 @@ data class FileVersionEntity(
     val versionVectorJson: String,
     val originDeviceId: String,
     val localSequence: Long,
+    @ColumnInfo(defaultValue = "0") val purgeRecovery: Boolean = false,
 )
 
 @Entity(
@@ -314,6 +315,7 @@ data class RemoteFileVersionEntity(
     val deleted: Boolean,
     val versionVectorJson: String,
     val remoteSequence: Long,
+    @ColumnInfo(defaultValue = "0") val purgeRecovery: Boolean = false,
 )
 
 @Entity(

@@ -75,6 +75,7 @@ class AtomicFileApplier(
             require(Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS) && !Files.isSymbolicLink(target)) {
                 "Refusing to delete a non-file sync path"
             }
+            expectedContent?.verify(Files.newInputStream(target).buffered().use(::sha256Hex))
             Files.delete(target)
         }
     }

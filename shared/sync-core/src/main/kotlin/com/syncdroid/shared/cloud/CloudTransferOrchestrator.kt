@@ -33,6 +33,7 @@ class CloudTransferOrchestrator(
     private val connectedProviders: () -> Collection<CloudProvider>,
     private val runner: CloudTransferRunner,
     private val onProgress: (String) -> Unit = {},
+    private val automaticAllowed: () -> Boolean = { true },
 ) {
     private val mutex = Mutex()
     @Volatile private var stopping = false
@@ -43,7 +44,7 @@ class CloudTransferOrchestrator(
     }
 
     suspend fun run(trigger: CloudSyncTrigger): CloudTransferResult = mutex.withLock {
-        if (stopping) return@withLock CloudTransferResult()
+        if (stopping || (trigger != CloudSyncTrigger.MANUAL && !automaticAllowed())) return@withLock CloudTransferResult()
         val currentPolicy = policy()
         if (currentPolicy.scope == CloudSyncScope.DISABLED) return@withLock CloudTransferResult()
         val folders = folderIds().filter(currentPolicy::isEnabledFor)

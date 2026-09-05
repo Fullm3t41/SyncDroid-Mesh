@@ -382,6 +382,9 @@ fun SyncDroidApp(openFoldersRequest: Int = 0) {
     }.collectAsState(initial = emptyList())
     val wifiPolicyStore = remember(context) { WifiSyncPolicyStore(context) }
     val discoveryPolicyStore = remember(context) { DiscoveryPolicyStore(context) }
+    val cloudAccounts = remember(context) { com.syncdroid.app.cloud.AndroidCloudAccounts.get(context) }
+    val cloudAccountRevision by cloudAccounts.revision.collectAsState()
+    val cloudProgress by com.syncdroid.app.cloud.AndroidCloudStatus.state.collectAsState()
     val cloudPolicyStore = remember(context) { CloudSyncPolicyStore(context) }
     var cloudPolicyRevision by remember { mutableIntStateOf(0) }
     val cloudPolicy = remember(cloudPolicyStore, cloudPolicyRevision) { cloudPolicyStore.load() }
@@ -888,6 +891,12 @@ fun SyncDroidApp(openFoldersRequest: Int = 0) {
                 )
             } else if (showCloudSettings) {
                 CloudSyncSettingsScreen(
+                    accounts = cloudAccounts,
+                    accountRevision = cloudAccountRevision,
+                    cloudProgress = cloudProgress,
+                    onConnect = { context.startActivity(cloudAccounts.signInIntent(it)) },
+                    onDisconnect = { provider -> scope.launch { cloudAccounts.disconnect(provider) } },
+                    onSyncNow = { com.syncdroid.app.service.SyncServiceController.requestCloudSync(context) },
                     policy = cloudPolicy,
                     onScopeChanged = { scope ->
                         cloudPolicyStore.setScope(scope)
@@ -983,6 +992,14 @@ fun SyncDroidApp(openFoldersRequest: Int = 0) {
                         loadVersions = { database.syncDao().fileVersions(folder.meshFolderId) },
                         onExclude = { paths ->
                             paths.forEach { folderExceptions.record(folder.meshFolderId, it) }
+                        },
+                        onDeleteEverywhere = { paths, permanent ->
+                            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                com.syncdroid.app.cloud.CloudTransferGate.cloud {
+                                    val binding = requireNotNull(database.syncDao().getBinding(folder.meshFolderId, identity.deviceId))
+                                    fileHistory.deleteFromAllDevices(binding, paths, permanent)
+                                }
+                            }
                         },
                         onDelete = { paths ->
                             val binding = requireNotNull(
@@ -2964,6 +2981,12 @@ private fun UpdateCard(state: UpdateState, onClick: () -> Unit) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CloudSyncSettingsScreen(
+    accounts: com.syncdroid.app.cloud.AndroidCloudAccounts,
+    accountRevision: Int,
+    cloudProgress: com.syncdroid.app.cloud.CloudProgress,
+    onConnect: (com.syncdroid.shared.cloud.CloudProvider) -> Unit,
+    onDisconnect: (com.syncdroid.shared.cloud.CloudProvider) -> Unit,
+    onSyncNow: () -> Unit,
     policy: CloudSyncPolicy,
     onScopeChanged: (CloudSyncScope) -> Unit,
     onBack: () -> Unit,
@@ -3020,9 +3043,16 @@ private fun CloudSyncSettingsScreen(
                 SectionLabel("ACCOUNTS")
                 Spacer(Modifier.height(8.dp))
                 SettingsCard {
-                    SettingsInfoRow(Icons.Rounded.Cloud, "Google Drive", "Not connected")
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f))
-                    SettingsInfoRow(Icons.Rounded.Cloud, "OneDrive", "Not connected")
+                    com.syncdroid.shared.cloud.CloudProvider.entries.forEach { provider ->
+                        val connected = remember(accountRevision, provider) { accounts.connected(provider) }
+                        SettingsActionRow(Icons.Rounded.Cloud, provider.displayName,
+                            if (connected) "Connected · select to disconnect" else if (accounts.configured(provider)) "Sign in to your cloud account" else "Sign-in is not available in this build yet",
+                            onClick = { if (connected) onDisconnect(provider) else onConnect(provider) },
+                            enabled = !cloudProgress.busy && accounts.configured(provider))
+                    }
+                    SettingsActionRow(Icons.Rounded.Cloud, "Sync cloud now", cloudProgress.message,
+                        onClick = onSyncNow, enabled = !cloudProgress.busy && policy.scope != CloudSyncScope.DISABLED &&
+                            com.syncdroid.shared.cloud.CloudProvider.entries.any(accounts::connected))
                 }
             }
             item {
@@ -3031,7 +3061,7 @@ private fun CloudSyncSettingsScreen(
                     shape = RoundedCornerShape(18.dp),
                 ) {
                     Text(
-                        "Cloud files use the same hashes, version history and conflict checks as local peers. Account connection becomes available when the Google and Microsoft OAuth app registrations are added to this build.",
+                        "Already-paired devices can exchange encrypted files through the same cloud account on different networks. Off registered Wi-Fi, use Sync cloud now to pull and push changes. Automatic cloud checks run only on registered Wi-Fi.",
                         modifier = Modifier.padding(16.dp),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onPrimaryContainer,

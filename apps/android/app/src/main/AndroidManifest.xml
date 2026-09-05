@@ -28,6 +28,7 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.SyncDroid">
+        <activity android:name=".cloud.CloudSignInActivity" android:exported="false" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

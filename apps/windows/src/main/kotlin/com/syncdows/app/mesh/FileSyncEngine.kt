@@ -29,6 +29,11 @@ internal fun FileSyncPlan.expectedContent() = com.syncdroid.shared.sync.Expected
 )
 
 fun decideFileSync(local: FileVersion?, remote: RemoteFileVersion): Pair<FileSyncAction, String> {
+    require(!remote.purgeRecovery || remote.deleted) { "Recovery purge requires a deletion" }
+    if (remote.purgeRecovery && local?.deleted != false && local?.purgeRecovery != true &&
+        (local == null || local.version.relationTo(remote.version) != com.syncdroid.shared.protocol.CausalRelation.After)) {
+        return FileSyncAction.DownloadRemote to "Removing recovery copies for a permanent deletion"
+    }
     val decision = decideSharedFileSync(
         local = local?.let { FileSyncState(it.deleted, it.contentSha256, it.previousContentSha256, it.version) },
         remote = FileSyncState(remote.deleted, remote.contentSha256, remote.previousContentSha256, remote.version),
@@ -45,6 +50,28 @@ class FileSyncEngine(
 
     fun scanConfiguredFolders(recordHistory: Boolean = true) {
         store.configuredFolders(profile.groupId, identity.deviceId).forEach { scanFolder(it, recordHistory) }
+    }
+
+    /** Explicit deletion bypasses overwrite-only scanning and retains a versioned tombstone. */
+    fun deleteFromAllDevices(folderId: String, paths: List<String>, permanent: Boolean = false) {
+        val root = requireNotNull(configuredRoot(folderId)) { "Folder is not configured" }
+        require(Files.isDirectory(root)) { "Folder is unavailable" }
+        require(paths.isNotEmpty()) { "Select a file" }
+        val selected = paths.distinct().map { path ->
+            requireNotNull(store.fileVersion(folderId, normalizedRelativePath(path))) { "Sync this file before deleting it" }
+        }.filterNot { it.deleted }
+        selected.forEach { version ->
+            val state = requireNotNull(store.folderIndexState(folderId, identity.deviceId))
+            val now = System.currentTimeMillis()
+            if (permanent) history.deletePermanently(root, version)
+            else history.deleteWithRecovery(root, version, identity.deviceId, now)
+            val sequence = state.maxSequence + 1
+            store.saveLocalIndex(listOf(version.copy(sizeBytes = 0, modifiedAtMillis = now,
+                contentSha256 = "", previousContentSha256 = version.contentSha256, deleted = true,
+                version = version.version.increment(identity.deviceId), originDeviceId = identity.deviceId,
+                localSequence = sequence, purgeRecovery = permanent)), state.copy(maxSequence = sequence, metadataReceivedSequence = sequence,
+                contentAppliedSequence = sequence, updatedAtMillis = now))
+        }
     }
 
     fun buildCatalog(remoteDeviceId: String): List<FolderClock> =
@@ -104,7 +131,7 @@ class FileSyncEngine(
         )
     }
 
-    fun receiveIndexes(remoteDeviceId: String, updates: List<FolderIndexUpdate>): List<FileSyncPlan> {
+    fun receiveIndexes(remoteDeviceId: String, updates: List<FolderIndexUpdate>, pendingFolderIds: Set<String>? = null): List<FileSyncPlan> {
         val plans = mutableListOf<FileSyncPlan>()
         updates.forEach { update ->
             validateFolderIndexUpdate(update)
@@ -131,7 +158,7 @@ class FileSyncEngine(
             }
         }
         val receivedKeys = plans.mapTo(mutableSetOf()) { it.key() }
-        store.folders(profile.groupId, identity.deviceId).forEach { folder ->
+        store.folders(profile.groupId, identity.deviceId).filter { pendingFolderIds == null || it.folderId in pendingFolderIds }.forEach { folder ->
             store.pendingRemoteVersions(folder.folderId, remoteDeviceId).forEach { remote ->
                 val key = "${remote.folderId}\u0000${remote.relativePath}\u0000${remote.remoteSequence}"
                 if (key in receivedKeys) return@forEach
@@ -274,6 +301,7 @@ class FileSyncEngine(
             localSequence,
             blockSizeBytes = manifest?.blockSizeBytes ?: 0,
             blocks = manifest?.blocks ?: emptyList(),
+            purgeRecovery = purgeRecovery,
         )
     }
 
@@ -368,6 +396,7 @@ internal fun IndexedFileRecord.toRemote(folderId: String, deviceId: String) = Re
     deleted,
     version,
     sequence,
+    purgeRecovery,
 )
 
 private fun FileSyncPlan.key() = "${remote.folderId}\u0000${remote.relativePath}\u0000${remote.remoteSequence}"

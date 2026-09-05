@@ -14,7 +14,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
-data class CloudRemoteItem(val id: String, val name: String, val sizeBytes: Long, val folder: Boolean)
+data class CloudRemoteItem(val id: String, val name: String, val sizeBytes: Long, val folder: Boolean, val modifiedAtMillis: Long = 0)
 
 interface CloudRemoteStore {
     val rootId: String
@@ -22,11 +22,14 @@ interface CloudRemoteStore {
     suspend fun list(parentId: String): List<CloudRemoteItem>
     suspend fun upload(parentId: String, name: String, source: Path): CloudRemoteItem
     suspend fun download(itemId: String, destination: Path)
+    suspend fun trash(itemId: String)
 }
 
 class GoogleDriveRemoteStore(
     private val accessToken: suspend () -> String,
     private val http: HttpClient = defaultCloudHttpClient(),
+    private val filesEndpoint: String = FILES,
+    private val uploadEndpoint: String = UPLOAD,
 ) : CloudRemoteStore {
     override val rootId = "root"
 
@@ -37,7 +40,7 @@ class GoogleDriveRemoteStore(
             .put("mimeType", FOLDER_MIME)
             .put("parents", listOf(parentId))
         return jsonRequest(
-            HttpRequest.newBuilder(URI("$FILES?fields=id,name,mimeType,size"))
+            HttpRequest.newBuilder(URI("$filesEndpoint?fields=id,name,mimeType,size"))
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(json.toString())),
         ).getString("id")
@@ -49,17 +52,17 @@ class GoogleDriveRemoteStore(
         do {
             val query = buildString {
                 append("q=").append(url("'$parentId' in parents and trashed = false"))
-                append("&fields=").append(url("nextPageToken,files(id,name,mimeType,size)"))
+                append("&fields=").append(url("nextPageToken,files(id,name,mimeType,size,modifiedTime)"))
                 append("&pageSize=1000")
                 pageToken?.let { append("&pageToken=").append(url(it)) }
             }
-            val json = jsonRequest(HttpRequest.newBuilder(URI("$FILES?$query")).GET())
+            val json = jsonRequest(HttpRequest.newBuilder(URI("$filesEndpoint?$query")).GET())
             val files = json.getJSONArray("files")
             repeat(files.length()) { index ->
                 val item = files.getJSONObject(index)
                 items += CloudRemoteItem(
                     item.getString("id"), item.getString("name"), item.optLong("size", 0),
-                    item.optString("mimeType") == FOLDER_MIME,
+                    item.optString("mimeType") == FOLDER_MIME, modifiedTime(item.optString("modifiedTime")),
                 )
             }
             pageToken = json.optString("nextPageToken").takeIf(String::isNotBlank)
@@ -71,8 +74,8 @@ class GoogleDriveRemoteStore(
         require(Files.isRegularFile(source))
         val existing = list(parentId).firstOrNull { !it.folder && it.name == name }
         val metadata = JSONObject().put("name", name).apply { if (existing == null) put("parents", listOf(parentId)) }
-        val endpoint = if (existing == null) "$UPLOAD/files?uploadType=resumable&fields=id,name,mimeType,size"
-        else "$UPLOAD/files/${urlPath(existing.id)}?uploadType=resumable&fields=id,name,mimeType,size"
+        val endpoint = if (existing == null) "$uploadEndpoint/files?uploadType=resumable&fields=id,name,mimeType,size"
+        else "$uploadEndpoint/files/${urlPath(existing.id)}?uploadType=resumable&fields=id,name,mimeType,size"
         val startBuilder = HttpRequest.newBuilder(URI(endpoint))
             .header("Content-Type", "application/json; charset=UTF-8")
             .header("X-Upload-Content-Type", "application/octet-stream")
@@ -98,9 +101,15 @@ class GoogleDriveRemoteStore(
 
     override suspend fun download(itemId: String, destination: Path) = withContext(Dispatchers.IO) {
         Files.createDirectories(requireNotNull(destination.parent))
-        val request = authorized(HttpRequest.newBuilder(URI("$FILES/${urlPath(itemId)}?alt=media")).GET())
+        val request = authorized(HttpRequest.newBuilder(URI("$filesEndpoint/${urlPath(itemId)}?alt=media")).GET())
         val response = http.send(request, HttpResponse.BodyHandlers.ofFile(destination))
         require(response.statusCode() in 200..299) { "Google Drive download failed (${response.statusCode()})" }
+    }
+
+    override suspend fun trash(itemId: String) {
+        jsonRequest(HttpRequest.newBuilder(URI("$filesEndpoint/${urlPath(itemId)}"))
+            .header("Content-Type", "application/json")
+            .method("PATCH", HttpRequest.BodyPublishers.ofString("{\"trashed\":true}")))
     }
 
     private suspend fun jsonRequest(builder: HttpRequest.Builder): JSONObject = withContext(Dispatchers.IO) {
@@ -126,6 +135,7 @@ class GoogleDriveRemoteStore(
 class OneDriveRemoteStore(
     private val accessToken: suspend () -> String,
     private val http: HttpClient = defaultCloudHttpClient(),
+    private val graphEndpoint: String = GRAPH,
 ) : CloudRemoteStore {
     override val rootId = "root"
 
@@ -142,7 +152,7 @@ class OneDriveRemoteStore(
 
     override suspend fun list(parentId: String): List<CloudRemoteItem> = withContext(Dispatchers.IO) {
         val result = mutableListOf<CloudRemoteItem>()
-        var next: String? = "${itemEndpoint(parentId)}/children?\$select=id,name,size,folder&\$top=1000"
+        var next: String? = "${itemEndpoint(parentId)}/children?\$select=id,name,size,folder,lastModifiedDateTime&\$top=1000"
         while (next != null) {
             val json = jsonRequest(HttpRequest.newBuilder(URI(next)).GET())
             val values = json.getJSONArray("value")
@@ -182,7 +192,6 @@ class OneDriveRemoteStore(
                 val end = offset + count - 1
                 val request = HttpRequest.newBuilder(uploadUrl)
                     .timeout(Duration.ofMinutes(10))
-                    .header("Content-Length", count.toString())
                     .header("Content-Range", "bytes $offset-$end/$size")
                     .PUT(HttpRequest.BodyPublishers.ofByteArray(bytes))
                     .build()
@@ -198,10 +207,16 @@ class OneDriveRemoteStore(
     override suspend fun download(itemId: String, destination: Path) = withContext(Dispatchers.IO) {
         Files.createDirectories(requireNotNull(destination.parent))
         val response = http.send(
-            authorized(HttpRequest.newBuilder(URI("$GRAPH/me/drive/items/${urlPath(itemId)}/content")).GET()),
+            authorized(HttpRequest.newBuilder(URI("$graphEndpoint/me/drive/items/${urlPath(itemId)}/content")).GET()),
             HttpResponse.BodyHandlers.ofFile(destination),
         )
         require(response.statusCode() in 200..299) { "OneDrive download failed (${response.statusCode()})" }
+    }
+
+    override suspend fun trash(itemId: String): Unit = withContext(Dispatchers.IO) {
+        val response = http.send(authorized(HttpRequest.newBuilder(
+            URI("$graphEndpoint/me/drive/items/${urlPath(itemId)}")).DELETE()), HttpResponse.BodyHandlers.ofString())
+        require(response.statusCode() in 200..299 || response.statusCode() == 404) { cloudError("OneDrive", response) }
     }
 
     private suspend fun jsonRequest(builder: HttpRequest.Builder): JSONObject = withContext(Dispatchers.IO) {
@@ -214,13 +229,13 @@ class OneDriveRemoteStore(
         builder.timeout(Duration.ofSeconds(60)).header("Authorization", "Bearer ${accessToken()}").build()
 
     private fun responseItem(json: JSONObject) = CloudRemoteItem(
-        json.getString("id"), json.getString("name"), json.optLong("size", 0), json.has("folder"),
+        json.getString("id"), json.getString("name"), json.optLong("size", 0), json.has("folder"), modifiedTime(json.optString("lastModifiedDateTime")),
     )
 
     private fun itemEndpoint(itemId: String): String = if (itemId == rootId) {
-        "$GRAPH/me/drive/root"
+        "$graphEndpoint/me/drive/root"
     } else {
-        "$GRAPH/me/drive/items/${urlPath(itemId)}"
+        "$graphEndpoint/me/drive/items/${urlPath(itemId)}"
     }
 
     private companion object {
@@ -242,3 +257,5 @@ private fun cloudError(provider: String, response: HttpResponse<String>): String
     json.optJSONObject("error")?.optString("message")
         ?: json.optString("error_description")
 }.getOrNull()?.takeIf(String::isNotBlank) ?: "$provider request failed (${response.statusCode()})"
+
+private fun modifiedTime(value: String): Long = runCatching { java.time.Instant.parse(value).toEpochMilli() }.getOrDefault(0)

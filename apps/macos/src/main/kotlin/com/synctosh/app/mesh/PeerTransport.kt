@@ -198,7 +198,7 @@ class MeshPeerServer(
     override fun close() {
         running.set(false)
         runCatching { server?.close() }
-        activeSockets.toList().forEach { socket -> runCatching { socket.close() } }
+        activeSockets.iterator().asSequence().toList().forEach { socket -> runCatching { socket.close() } }
         scope?.cancel()
         server = null
         scope = null

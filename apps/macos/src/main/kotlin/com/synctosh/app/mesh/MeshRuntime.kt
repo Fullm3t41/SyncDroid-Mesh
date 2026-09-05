@@ -95,7 +95,8 @@ class MeshRuntime(
     private val syncMutex = Mutex()
     private val fileHistory = FileHistoryRepository(store, identity.deviceId)
     private val chatAttachments = ChatAttachmentStore(store)
-    private val cloud = DesktopCloudSync(preferences, store, identity) { cloudStatus ->
+    private val cloud = DesktopCloudSync(preferences, store, identity, syncMutex,
+        automaticAllowed = { backgroundWifiAllowed(MacWifi.currentSsid()) }) { cloudStatus ->
         mutableState.value = mutableState.value.copy(status = cloudStatus, busy = false)
     }
     private var expiryJob: Job? = null
@@ -130,6 +131,15 @@ class MeshRuntime(
                     registeredWifiNames = preferences.registeredWifiNames,
                 )
                 delay(if (windowForeground) FOREGROUND_WIFI_POLL_MILLIS else BACKGROUND_WIFI_POLL_MILLIS)
+            }
+        }
+        scope.launch {
+            while (isActive && !closing) {
+                if ((windowForeground || preferences.alwaysOnDiscovery) && backgroundWifiAllowed(MacWifi.currentSsid())) {
+                    runCatching { cloud.sync(CloudSyncTrigger.SCHEDULED_WINDOW) }
+                        .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it else report(it) }
+                }
+                delay(60_000)
             }
         }
         if (!windowForeground) restartBackgroundSchedule()
@@ -337,6 +347,13 @@ class MeshRuntime(
         if (discovered.isEmpty()) refresh("No trusted devices are currently online")
     }
 
+    fun syncCloudNow() = scope.launch {
+        updateBusy("Syncing cloud files…")
+        runCatching { cloud.sync(CloudSyncTrigger.MANUAL) }
+            .onSuccess { result -> refresh("Cloud sync finished · ${result.uploadedFiles} up, ${result.downloadedFiles} down, ${result.conflicts} conflicts") }
+            .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it else report(it) }
+    }
+
     fun connectCloud(provider: CloudProvider) = scope.launch {
         updateBusy("Connecting ${provider.displayName}…")
         runCatching { cloud.connect(provider) }
@@ -405,6 +422,22 @@ class MeshRuntime(
         val profile = store.profile() ?: return null
         val message = store.chatMessage(profile.groupId, messageId) ?: return null
         return chatAttachments.localPath(message)
+    }
+
+    suspend fun filesForMeshDeletion(folderId: String): List<String> = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        syncMutex.withLock {
+            val profile = requireNotNull(store.profile())
+            FileSyncEngine(store, identity, profile).scanConfiguredFolders()
+            store.fileVersions(folderId).filterNot { it.deleted }.map { it.relativePath }.sorted()
+        }
+    }
+
+    suspend fun deleteFilesFromAllDevices(folderId: String, paths: List<String>) = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        syncMutex.withLock {
+            val profile = requireNotNull(store.profile())
+            FileSyncEngine(store, identity, profile).deleteFromAllDevices(folderId, paths)
+            refresh("Deletion saved · other devices will apply it on their next sync")
+        }
     }
 
     fun recoverFile(eventId: String) = scope.launch {
@@ -742,7 +775,6 @@ class MeshRuntime(
                     store.profile()?.let { profile ->
                         connectToAvailablePeers(profile, discoveredPeers().values, initiatorOrdering = false)
                     }
-                    runCatching { cloud.sync(CloudSyncTrigger.SCHEDULED_WINDOW) }.onFailure(::report)
                     while (isActive && !windowForeground && preferences.alwaysOnDiscovery) delay(1_000)
                     continue
                 }

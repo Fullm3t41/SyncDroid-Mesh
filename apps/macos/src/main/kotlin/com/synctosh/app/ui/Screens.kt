@@ -62,6 +62,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -298,7 +299,14 @@ fun FoldersScreen(
     onDeclineFolder: (MeshFolder) -> Unit,
     onOpenFolder: (MeshFolder) -> Unit,
     onCloudFolderChanged: (String, Boolean) -> Unit,
+    loadDeleteFiles: suspend (String) -> List<String>,
+    onDeleteFiles: suspend (String, List<String>) -> Unit,
 ) {
+    var deleteFolder by remember { mutableStateOf<MeshFolder?>(null) }
+    deleteFolder?.let { folder ->
+        DeleteMeshFilesDialog(folder.displayName, { loadDeleteFiles(folder.folderId) },
+            { paths -> onDeleteFiles(folder.folderId, paths) }, { deleteFolder = null })
+    }
     var explanationExpanded by remember { mutableStateOf(false) }
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wide = maxWidth >= WIDE_SCREEN_BREAKPOINT
@@ -377,6 +385,7 @@ fun FoldersScreen(
                                     onDeclineFolder,
                                     onOpenFolder,
                                     onCloudFolderChanged,
+                                    { deleteFolder = it },
                                 )
                             }
                         }
@@ -418,6 +427,7 @@ private fun MeshFolderCard(
     onDecline: (MeshFolder) -> Unit,
     onOpenFolder: (MeshFolder) -> Unit,
     onCloudFolderChanged: (String, Boolean) -> Unit,
+    onDeleteFiles: (MeshFolder) -> Unit,
 ) {
     var expanded by remember(folder.folderId) { mutableStateOf(false) }
     val summary = when (folder.bindingState) {
@@ -484,6 +494,11 @@ private fun MeshFolderCard(
                     Spacer(Modifier.width(6.dp))
                     Text("Open in Finder")
                 }
+            }
+        }
+        if (folder.bindingState == LocalFolderBindingState.CONFIGURED) {
+            TextButton(onClick = { onDeleteFiles(folder) }) {
+                Text("Delete from all devices", color = MaterialTheme.colorScheme.error)
             }
         }
     }

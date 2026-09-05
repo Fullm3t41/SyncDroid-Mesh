@@ -17,6 +17,8 @@ import com.syncdroid.shared.cloud.OneDriveRemoteStore
 import com.synctosh.app.platform.AppPreferences
 import java.nio.file.Files
 import java.nio.file.Path
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 data class CloudAccountStatus(
     val provider: CloudProvider,
@@ -28,6 +30,8 @@ class DesktopCloudSync(
     private val preferences: AppPreferences,
     private val store: MeshStore,
     private val identity: MacDeviceIdentity,
+    private val syncMutex: Mutex = Mutex(),
+    private val automaticAllowed: () -> Boolean = { false },
     private val status: (String) -> Unit,
 ) {
     private val tokenStore = EncryptedCloudTokenStore(
@@ -44,8 +48,11 @@ class DesktopCloudSync(
             if (profile == null) emptyList() else store.configuredFolders(profile.groupId, identity.deviceId).map(MeshFolder::folderId)
         },
         connectedProviders = { CloudProvider.entries.filter(oauth::connected) },
-        runner = CloudTransferRunner(::transferFolder),
+        runner = CloudTransferRunner { provider, folderId ->
+            syncMutex.withLock { DesktopCloudFolderTransfer(store, identity, remoteStore(provider)).run(provider, folderId) }
+        },
         onProgress = status,
+        automaticAllowed = automaticAllowed,
     )
 
     suspend fun stopAndDrain() = orchestrator.stopAndDrain()
@@ -68,22 +75,37 @@ class DesktopCloudSync(
     suspend fun sync(trigger: CloudSyncTrigger): CloudTransferResult = orchestrator.run(trigger)
 
     fun pairingKeys(profile: MeshProfile): List<com.syncdroid.shared.cloud.FolderKeyMaterial> =
-        store.folders(profile.groupId, identity.deviceId).map { folderKeys.getOrCreate(it.folderId) }
+        store.folders(profile.groupId, identity.deviceId).flatMap {
+            folderKeys.getOrCreate(it.folderId)
+            folderKeys.all(it.folderId)
+        }
 
     fun availableKeys(profile: MeshProfile): List<com.syncdroid.shared.cloud.FolderKeyMaterial> =
-        store.folders(profile.groupId, identity.deviceId).mapNotNull { folderKeys.existing(it.folderId) }
+        store.folders(profile.groupId, identity.deviceId).flatMap { folderKeys.all(it.folderId) }
 
     fun importPairingKey(value: com.syncdroid.shared.cloud.FolderKeyMaterial) = folderKeys.import(value)
 
-    private suspend fun transferFolder(provider: CloudProvider, folderId: String): CloudTransferResult {
+    private fun remoteStore(provider: CloudProvider): CloudRemoteStore = when (provider) {
+        CloudProvider.GOOGLE_DRIVE -> GoogleDriveRemoteStore(accessToken = { oauth.accessToken(provider) })
+        CloudProvider.ONE_DRIVE -> OneDriveRemoteStore(accessToken = { oauth.accessToken(provider) })
+    }
+}
+
+internal class DesktopCloudFolderTransfer(
+    private val store: MeshStore,
+    private val identity: MacDeviceIdentity,
+    private val remote: CloudRemoteStore,
+) {
+    private val folderKeys = DesktopFolderKeyStore(store, identity)
+
+    suspend fun run(provider: CloudProvider, folderId: String): CloudTransferResult {
         val profile = requireNotNull(store.profile()) { "Join a mesh before using cloud sync" }
         val folder = store.configuredFolders(profile.groupId, identity.deviceId).firstOrNull { it.folderId == folderId }
             ?: return CloudTransferResult()
-        val root = Path.of(requireNotNull(folder.localPath))
+        val root = Path.of(requireNotNull(folder.localPath)).toAbsolutePath().normalize()
         val engine = FileSyncEngine(store, identity, profile)
         engine.scanConfiguredFolders()
         val key = folderKeys.getOrCreate(folderId)
-        val remote = remoteStore(provider)
         val syncRootId = remote.ensureFolder(remote.rootId, "SyncDroid")
         val folderRootId = remote.ensureFolder(syncRootId, folder.displayName)
         val remoteItems = remote.list(folderRootId).associateBy { it.name }
@@ -93,66 +115,75 @@ class DesktopCloudSync(
             .filter { it.trusted && it.deviceId != identity.deviceId }
             .map(TrustedDevice::deviceId)
         publishers.forEach { publisherId ->
-            val manifestItem = remoteItems[CloudEncryptedObjects.manifestName(key, publisherId)] ?: return@forEach
-            val encryptedManifest = Files.createTempFile(store.storageDirectory, "cloud-manifest-", ".sdenc")
-            try {
-                remote.download(manifestItem.id, encryptedManifest)
-                val manifest = CloudEncryptedObjects.decryptManifest(key, publisherId, Files.readAllBytes(encryptedManifest))
-                val plans = engine.receiveIndexes(publisherId, listOf(manifest.index))
-                plans.forEach { plan ->
-                    when (plan.action) {
-                        FileSyncAction.Nothing -> store.acknowledgeRemoteApplied(
-                            plan.remote.folderId, publisherId, plan.remote.remoteSequence,
-                        )
-                        FileSyncAction.Conflict, FileSyncAction.SendLocal -> if (plan.action == FileSyncAction.Conflict) {
-                            result = result.copy(conflicts = result.conflicts + 1)
-                        }
-                        FileSyncAction.DownloadRemote -> {
-                            val localBefore = store.fileVersion(folderId, plan.relativePath)
-                            if (plan.remote.deleted) {
-                                if (localBefore != null && !localBefore.deleted) {
-                                    FileHistoryRepository(store, identity.deviceId).deleteWithRecovery(
-                                        root, localBefore, plan.remote.originDeviceId.ifBlank { publisherId },
-                                    )
-                                } else AtomicFileApplier(root).delete(plan.relativePath)
-                            } else {
-                                val objectName = CloudEncryptedObjects.fileName(key, plan.remote.fileId, plan.remote.contentSha256)
-                                val objectItem = remoteItems[objectName]
-                                    ?: error("${provider.displayName} is missing ${plan.relativePath}; it will retry next sync")
-                                val encryptedFile = Files.createTempFile(store.storageDirectory, "cloud-file-", ".sdenc")
-                                val plaintext = Files.createTempFile(store.storageDirectory, "cloud-file-", ".part")
-                                try {
-                                    remote.download(objectItem.id, encryptedFile)
-                                    CloudEncryptedObjects.decryptFile(
-                                        key, plan.remote.fileId, plan.remote.contentSha256, encryptedFile, plaintext,
-                                    )
-                                    Files.newInputStream(plaintext).use { input ->
-                                        AtomicFileApplier(root, plan.expectedContent()).apply(
-                                            plan.relativePath, input, plan.remote.contentSha256, plan.remote.modifiedAtMillis,
-                                        )
-                                    }
-                                } finally {
-                                    Files.deleteIfExists(encryptedFile)
-                                    Files.deleteIfExists(plaintext)
-                                }
-                                FileHistoryRepository(store, identity.deviceId).recordSynced(plan.remote)
-                                result = result.copy(
-                                    downloadedFiles = result.downloadedFiles + 1,
-                                    transferredBytes = result.transferredBytes + plan.remote.sizeBytes,
+            val manifests = folderKeys.all(folderId).mapNotNull { candidateKey ->
+                val item = remoteItems[CloudEncryptedObjects.manifestName(candidateKey, publisherId)] ?: return@mapNotNull null
+                require(item.sizeBytes in 1..(64L * 1024 * 1024 + 1024)) { "Cloud manifest is too large" }
+                val temporary = Files.createTempFile(store.storageDirectory, "cloud-manifest-", ".sdenc")
+                try {
+                    remote.download(item.id, temporary)
+                    candidateKey to CloudEncryptedObjects.decryptManifest(candidateKey, publisherId, Files.readAllBytes(temporary))
+                } finally { Files.deleteIfExists(temporary) }
+            }
+            val (sourceKey, manifest) = manifests.maxByOrNull { it.second.publishedAtMillis } ?: return@forEach
+            var acknowledgementBlocked = false
+            val plans = engine.receiveIndexes(publisherId, listOf(manifest.index), setOf(folderId)).filter { it.remote.folderId == folderId }
+            plans.forEach { plan ->
+                when (plan.action) {
+                    FileSyncAction.Nothing -> if (!acknowledgementBlocked) store.acknowledgeRemoteApplied(
+                        plan.remote.folderId, publisherId, plan.remote.remoteSequence,
+                    )
+                    FileSyncAction.Conflict, FileSyncAction.SendLocal -> {
+                        acknowledgementBlocked = true
+                        if (plan.action == FileSyncAction.Conflict) result = result.copy(conflicts = result.conflicts + 1)
+                    }
+                    FileSyncAction.DownloadRemote -> {
+                        val localBefore = store.fileVersion(folderId, plan.relativePath)
+                        if (plan.remote.deleted) {
+                            if (plan.remote.purgeRecovery) {
+                                AtomicFileApplier(root, plan.expectedContent()).delete(plan.relativePath)
+                                FileHistoryRepository(store, identity.deviceId).purgeRecoveries(folderId, plan.relativePath)
+                            } else if (localBefore != null && !localBefore.deleted) {
+                                FileHistoryRepository(store, identity.deviceId).deleteWithRecovery(
+                                    root, localBefore, plan.remote.originDeviceId.ifBlank { publisherId },
                                 )
+                            } else AtomicFileApplier(root, plan.expectedContent()).delete(plan.relativePath)
+                        } else {
+                            val objectName = if (manifest.publisherScopedFiles) {
+                                CloudEncryptedObjects.publisherFileName(sourceKey, publisherId, plan.remote.fileId, plan.remote.contentSha256)
+                            } else CloudEncryptedObjects.fileName(sourceKey, plan.remote.fileId, plan.remote.contentSha256)
+                            val objectItem = remoteItems[objectName]
+                                ?: error("${provider.displayName} is missing ${plan.relativePath}; it will retry next sync")
+                            val encryptedFile = Files.createTempFile(store.storageDirectory, "cloud-file-", ".sdenc")
+                            val plaintext = Files.createTempFile(store.storageDirectory, "cloud-file-", ".part")
+                            try {
+                                remote.download(objectItem.id, encryptedFile)
+                                CloudEncryptedObjects.decryptFile(
+                                    sourceKey, plan.remote.fileId, plan.remote.contentSha256, encryptedFile, plaintext,
+                                )
+                                Files.newInputStream(plaintext).use { input ->
+                                    AtomicFileApplier(root, plan.expectedContent()).apply(
+                                        plan.relativePath, input, plan.remote.contentSha256, plan.remote.modifiedAtMillis,
+                                    )
+                                }
+                            } finally {
+                                Files.deleteIfExists(encryptedFile)
+                                Files.deleteIfExists(plaintext)
                             }
-                            engine.markRemoteApplied(publisherId, plan.remote, acknowledge = true)
+                            FileHistoryRepository(store, identity.deviceId).recordSynced(plan.remote.copy(relativePath = plan.relativePath))
+                            result = result.copy(
+                                downloadedFiles = result.downloadedFiles + 1,
+                                transferredBytes = result.transferredBytes + plan.remote.sizeBytes,
+                            )
                         }
+                        engine.markRemoteApplied(publisherId, plan.remote, acknowledge = !acknowledgementBlocked)
                     }
                 }
-            } finally {
-                Files.deleteIfExists(encryptedManifest)
             }
         }
 
         val current = requireNotNull(engine.buildFullUpdate(folderId))
         current.files.filterNot { it.deleted }.forEach { file ->
-            val objectName = CloudEncryptedObjects.fileName(key, file.fileId, file.contentSha256)
+            val objectName = CloudEncryptedObjects.publisherFileName(key, identity.deviceId, file.fileId, file.contentSha256)
             if (remoteItems[objectName] == null) {
                 val source = root.resolve(file.relativePath).normalize()
                 require(source.startsWith(root.toAbsolutePath().normalize()) && Files.isRegularFile(source))
@@ -169,7 +200,7 @@ class DesktopCloudSync(
                 }
             }
         }
-        val manifest = CloudFolderManifest(folderId, folder.displayName, identity.deviceId, System.currentTimeMillis(), current)
+        val manifest = CloudFolderManifest(folderId, folder.displayName, identity.deviceId, System.currentTimeMillis(), current, publisherScopedFiles = true)
         val manifestBytes = CloudEncryptedObjects.encryptManifest(key, manifest)
         val manifestFile = Files.createTempFile(store.storageDirectory, "cloud-publish-", ".sdenc")
         try {
@@ -178,11 +209,15 @@ class DesktopCloudSync(
         } finally {
             Files.deleteIfExists(manifestFile)
         }
+        val liveNames = current.files.filterNot { it.deleted }.mapTo(mutableSetOf()) {
+            CloudEncryptedObjects.publisherFileName(key, identity.deviceId, it.fileId, it.contentSha256)
+        }
+        val prefixes = folderKeys.all(folderId).map { CloudEncryptedObjects.publisherFilePrefix(it, identity.deviceId) }
+        val ledgerId = java.util.UUID.nameUUIDFromBytes("${provider.name}/$folderRootId".toByteArray())
+        com.syncdroid.shared.cloud.CloudRetentionLedger(store.storageDirectory.resolve("cloud-retention/$ledgerId.json"))
+            .expiredObjects(remoteItems.values, liveNames, prefixes)
+            .forEach { remote.trash(it.id) }
         return result
     }
 
-    private fun remoteStore(provider: CloudProvider): CloudRemoteStore = when (provider) {
-        CloudProvider.GOOGLE_DRIVE -> GoogleDriveRemoteStore(accessToken = { oauth.accessToken(provider) })
-        CloudProvider.ONE_DRIVE -> OneDriveRemoteStore(accessToken = { oauth.accessToken(provider) })
-    }
 }

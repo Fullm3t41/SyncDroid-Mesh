@@ -318,6 +318,9 @@ interface SyncDao {
 
 @Dao
 interface ActivityDao {
+    @Query("SELECT * FROM activity_events WHERE folderId = :folderId AND relativePath = :relativePath AND recoveryPath IS NOT NULL")
+    suspend fun recoveriesForFile(folderId: String, relativePath: String): List<ActivityEventEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(event: ActivityEventEntity)
 

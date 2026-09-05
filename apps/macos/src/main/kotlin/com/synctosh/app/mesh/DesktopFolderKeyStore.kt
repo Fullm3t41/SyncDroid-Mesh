@@ -11,23 +11,28 @@ class DesktopFolderKeyStore(
 ) {
     private val cipher = LocalSecretCipher(identity.privateKey().encoded, "synctosh-folder-keys")
 
-    fun getOrCreate(folderId: String): FolderKeyMaterial {
-        store.storedFolderKey(folderId)?.let(::decode)?.let { return it }
-        return FolderKeyMaterial(folderId, UUID.randomUUID().toString(), ByteArray(32).also(SecureRandom()::nextBytes))
+    fun getOrCreate(folderId: String): FolderKeyMaterial = synchronized(store) {
+        existing(folderId) ?: FolderKeyMaterial(folderId, UUID.randomUUID().toString(), ByteArray(32).also(SecureRandom()::nextBytes))
             .also(::save)
     }
 
     fun existing(folderId: String): FolderKeyMaterial? = store.storedFolderKey(folderId)?.let(::decode)
 
-    fun import(value: FolderKeyMaterial): FolderKeyMaterial {
-        store.storedFolderKey(value.folderId)?.let(::decode)?.let { existing ->
-            require(existing.keyId == value.keyId && existing.bytes.contentEquals(value.bytes)) {
-                "A different cloud key already protects this folder"
-            }
-            return existing
+    fun all(folderId: String): List<FolderKeyMaterial> = synchronized(store) {
+        (listOfNotNull(existing(folderId)) + store.archivedFolderKeys(folderId).map(::decode)).distinctBy { it.keyId }
+    }
+
+    // Converge deterministically, keeping every previous key for existing cloud ciphertext.
+    fun import(value: FolderKeyMaterial): FolderKeyMaterial = synchronized(store) {
+        require(value.keyId.isNotBlank())
+        val known = all(value.folderId)
+        known.firstOrNull { it.keyId == value.keyId }?.let {
+            require(it.bytes.contentEquals(value.bytes)) { "Cloud key material does not match its ID" }
         }
-        save(value)
-        return value
+        (known + value).forEach {
+            store.archiveFolderKey(StoredFolderKey(it.folderId, it.keyId, cipher.encrypt(it.bytes)))
+        }
+        (known + value).minBy { it.keyId }.also(::save)
     }
 
     private fun save(value: FolderKeyMaterial) = store.saveFolderKey(

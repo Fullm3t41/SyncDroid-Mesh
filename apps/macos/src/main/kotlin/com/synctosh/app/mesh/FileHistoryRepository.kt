@@ -46,7 +46,7 @@ class FileHistoryRepository(
                     (event.recoverableUntilMillis ?: 0) > nowMillis
             }
         if (existing != null) {
-            AtomicFileApplier(root).delete(version.relativePath)
+            AtomicFileApplier(root, com.syncdroid.shared.sync.ExpectedFileContent(version.contentSha256)).delete(version.relativePath)
             return
         }
         Files.createDirectories(recoveryRoot)
@@ -72,7 +72,7 @@ class FileHistoryRepository(
             require(hash.equals(version.contentSha256, true)) {
                 "The file changed while its recovery copy was being created"
             }
-            AtomicFileApplier(root).delete(version.relativePath)
+            AtomicFileApplier(root, com.syncdroid.shared.sync.ExpectedFileContent(version.contentSha256)).delete(version.relativePath)
             store.insertHistory(
                 FileHistoryEvent(
                     eventId, FileHistoryAction.DELETED, version.folderId, version.relativePath, sourceDeviceId,
@@ -83,6 +83,22 @@ class FileHistoryRepository(
         } catch (error: Throwable) {
             Files.deleteIfExists(archive)
             throw error
+        }
+    }
+
+    fun deletePermanently(root: Path, version: FileVersion) {
+        AtomicFileApplier(root, com.syncdroid.shared.sync.ExpectedFileContent(version.contentSha256.takeUnless { version.deleted }))
+            .delete(version.relativePath)
+        purgeRecoveries(version.folderId, version.relativePath)
+        recordDetectedDeletion(version)
+    }
+
+    fun purgeRecoveries(folderId: String, relativePath: String) {
+        store.recoveriesForFile(folderId, relativePath).forEach { event ->
+            val path = requireNotNull(event.recoveryPath).let(Path::of)
+            require(isInsideRecoveryRoot(path)) { "Invalid recovery location" }
+            Files.deleteIfExists(path)
+            store.clearRecoveryPath(event.eventId)
         }
     }
 

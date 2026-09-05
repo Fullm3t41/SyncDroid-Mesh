@@ -38,6 +38,11 @@ object SyncServiceController {
         }
     }
 
+    fun requestCloudSync(context: Context) {
+        ContextCompat.startForegroundService(context.applicationContext,
+            Intent(context.applicationContext, SyncForegroundService::class.java).setAction(SyncForegroundService.ACTION_CLOUD_SYNC))
+    }
+
     fun requestRefresh(context: Context) {
         runCatching {
             ContextCompat.startForegroundService(

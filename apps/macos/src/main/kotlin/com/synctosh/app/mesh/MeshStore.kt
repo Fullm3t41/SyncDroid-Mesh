@@ -53,6 +53,7 @@ data class FileVersion(
     val version: VersionVector,
     val originDeviceId: String,
     val localSequence: Long,
+    val purgeRecovery: Boolean = false,
 )
 
 data class RemoteFileVersion(
@@ -68,6 +69,7 @@ data class RemoteFileVersion(
     val deleted: Boolean,
     val version: VersionVector,
     val remoteSequence: Long,
+    val purgeRecovery: Boolean = false,
 )
 
 data class FolderIndexState(
@@ -434,6 +436,25 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
     }
 
     @Synchronized
+    fun archivedFolderKeys(folderId: String): List<StoredFolderKey> = connection.prepareStatement(
+        "SELECT folder_id, key_id, encrypted_key FROM folder_key_history WHERE folder_id = ?",
+    ).use { statement ->
+        statement.setString(1, folderId)
+        statement.executeQuery().use { rows -> buildList {
+            while (rows.next()) add(StoredFolderKey(rows.getString(1), rows.getString(2), rows.getString(3)))
+        } }
+    }
+
+    @Synchronized
+    fun archiveFolderKey(value: StoredFolderKey) {
+        require(meshFolderExists(value.folderId)) { "Unknown mesh folder" }
+        connection.prepareStatement("INSERT OR IGNORE INTO folder_key_history(folder_id,key_id,encrypted_key) VALUES (?,?,?)").use {
+            it.setString(1, value.folderId); it.setString(2, value.keyId); it.setString(3, value.encryptedKey)
+            it.executeUpdate()
+        }
+    }
+
+    @Synchronized
     fun saveFolderKey(value: StoredFolderKey) {
         require(meshFolderExists(value.folderId)) { "Unknown mesh folder" }
         connection.prepareStatement(
@@ -451,7 +472,7 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
     @Synchronized
     fun fileVersions(folderId: String): List<FileVersion> = connection.prepareStatement(
         """SELECT folder_id, relative_path, file_id, size_bytes, modified_at_millis, content_sha256,
-                  previous_content_sha256, deleted, version_json, origin_device_id, local_sequence
+                  previous_content_sha256, deleted, version_json, origin_device_id, local_sequence, purge_recovery
            FROM file_versions WHERE folder_id = ? ORDER BY local_sequence, relative_path""",
     ).use { statement ->
         statement.setString(1, folderId)
@@ -461,7 +482,7 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
     @Synchronized
     fun fileVersion(folderId: String, relativePath: String): FileVersion? = connection.prepareStatement(
         """SELECT folder_id, relative_path, file_id, size_bytes, modified_at_millis, content_sha256,
-                  previous_content_sha256, deleted, version_json, origin_device_id, local_sequence
+                  previous_content_sha256, deleted, version_json, origin_device_id, local_sequence, purge_recovery
            FROM file_versions WHERE folder_id = ? AND relative_path = ? LIMIT 1""",
     ).use { statement ->
         statement.setString(1, folderId); statement.setString(2, relativePath)
@@ -471,7 +492,7 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
     @Synchronized
     fun fileVersionsAfter(folderId: String, afterSequence: Long): List<FileVersion> = connection.prepareStatement(
         """SELECT folder_id, relative_path, file_id, size_bytes, modified_at_millis, content_sha256,
-                  previous_content_sha256, deleted, version_json, origin_device_id, local_sequence
+                  previous_content_sha256, deleted, version_json, origin_device_id, local_sequence, purge_recovery
            FROM file_versions WHERE folder_id = ? AND local_sequence > ? ORDER BY local_sequence, relative_path""",
     ).use { statement ->
         statement.setString(1, folderId); statement.setLong(2, afterSequence)
@@ -636,7 +657,7 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
         val applied = folderIndexState(folderId, remoteDeviceId)?.contentAppliedSequence ?: 0
         return connection.prepareStatement(
             """SELECT folder_id, device_id, relative_path, file_id, size_bytes, modified_at_millis,
-                      content_sha256, previous_content_sha256, origin_device_id, deleted, version_json, remote_sequence
+                      content_sha256, previous_content_sha256, origin_device_id, deleted, version_json, remote_sequence, purge_recovery
                FROM remote_file_versions
                WHERE folder_id = ? AND device_id = ? AND remote_sequence > ?
                ORDER BY remote_sequence, relative_path""",
@@ -683,6 +704,7 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
                 remote.version,
                 remote.originDeviceId.ifBlank { remoteDeviceId },
                 nextSequence,
+                remote.purgeRecovery,
             ),
         )
         upsertFolderIndexStateLocked(
@@ -732,6 +754,17 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
            FROM file_history ORDER BY created_at_millis DESC, event_id DESC LIMIT ?""",
     ).use { statement ->
         statement.setInt(1, limit.coerceIn(1, 10_000))
+        statement.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.fileHistoryEvent()) } }
+    }
+
+    @Synchronized
+    fun recoveriesForFile(folderId: String, relativePath: String): List<FileHistoryEvent> = connection.prepareStatement(
+        """SELECT event_id, action, folder_id, relative_path, source_device_id, size_bytes,
+                  modified_at_millis, content_sha256, created_at_millis, recovery_path,
+                  recoverable_until_millis, recovered_at_millis
+           FROM file_history WHERE folder_id = ? AND relative_path = ? AND recovery_path IS NOT NULL""",
+    ).use { statement ->
+        statement.setString(1, folderId); statement.setString(2, relativePath)
         statement.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.fileHistoryEvent()) } }
     }
 
@@ -1074,20 +1107,20 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
         connection.prepareStatement(
             """INSERT INTO file_versions(
                    folder_id, relative_path, file_id, size_bytes, modified_at_millis, content_sha256,
-                   previous_content_sha256, deleted, version_json, origin_device_id, local_sequence)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   previous_content_sha256, deleted, version_json, origin_device_id, local_sequence, purge_recovery)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(folder_id, relative_path) DO UPDATE SET
                    file_id = excluded.file_id, size_bytes = excluded.size_bytes,
                    modified_at_millis = excluded.modified_at_millis, content_sha256 = excluded.content_sha256,
                    previous_content_sha256 = excluded.previous_content_sha256, deleted = excluded.deleted,
                    version_json = excluded.version_json, origin_device_id = excluded.origin_device_id,
-                   local_sequence = excluded.local_sequence""",
+                   local_sequence = excluded.local_sequence, purge_recovery = excluded.purge_recovery""",
         ).use {
             it.setString(1, value.folderId); it.setString(2, value.relativePath); it.setString(3, value.fileId)
             it.setLong(4, value.sizeBytes); it.setLong(5, value.modifiedAtMillis); it.setString(6, value.contentSha256)
             it.setString(7, value.previousContentSha256); it.setInt(8, if (value.deleted) 1 else 0)
             it.setString(9, value.version.toJson()); it.setString(10, value.originDeviceId)
-            it.setLong(11, value.localSequence); it.executeUpdate()
+            it.setLong(11, value.localSequence); it.setInt(12, if (value.purgeRecovery) 1 else 0); it.executeUpdate()
         }
     }
 
@@ -1095,20 +1128,20 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
         connection.prepareStatement(
             """INSERT INTO remote_file_versions(
                    folder_id, device_id, relative_path, file_id, size_bytes, modified_at_millis,
-                   content_sha256, previous_content_sha256, origin_device_id, deleted, version_json, remote_sequence)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   content_sha256, previous_content_sha256, origin_device_id, deleted, version_json, remote_sequence, purge_recovery)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(folder_id, device_id, relative_path) DO UPDATE SET
                    file_id = excluded.file_id, size_bytes = excluded.size_bytes,
                    modified_at_millis = excluded.modified_at_millis, content_sha256 = excluded.content_sha256,
                    previous_content_sha256 = excluded.previous_content_sha256,
                    origin_device_id = excluded.origin_device_id, deleted = excluded.deleted,
-                   version_json = excluded.version_json, remote_sequence = excluded.remote_sequence""",
+                   version_json = excluded.version_json, remote_sequence = excluded.remote_sequence, purge_recovery = excluded.purge_recovery""",
         ).use {
             it.setString(1, value.folderId); it.setString(2, value.deviceId); it.setString(3, value.relativePath)
             it.setString(4, value.fileId); it.setLong(5, value.sizeBytes); it.setLong(6, value.modifiedAtMillis)
             it.setString(7, value.contentSha256); it.setString(8, value.previousContentSha256)
             it.setString(9, value.originDeviceId); it.setInt(10, if (value.deleted) 1 else 0)
-            it.setString(11, value.version.toJson()); it.setLong(12, value.remoteSequence); it.executeUpdate()
+            it.setString(11, value.version.toJson()); it.setLong(12, value.remoteSequence); it.setInt(13, if (value.purgeRecovery) 1 else 0); it.executeUpdate()
         }
     }
 
@@ -1290,10 +1323,21 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
                     last_event_id TEXT NOT NULL, PRIMARY KEY(folder_id, relative_path))""",
             )
             statement.executeUpdate(
+                """CREATE TABLE IF NOT EXISTS folder_key_history(
+                    folder_id TEXT NOT NULL, key_id TEXT NOT NULL, encrypted_key TEXT NOT NULL,
+                    PRIMARY KEY(folder_id, key_id))""",
+            )
+            statement.executeUpdate(
                 """CREATE TABLE IF NOT EXISTS folder_keys(
                     folder_id TEXT PRIMARY KEY, key_id TEXT NOT NULL,
                     encrypted_key TEXT NOT NULL, updated_at_millis INTEGER NOT NULL)""",
             )
+            listOf("file_versions", "remote_file_versions").forEach { table ->
+                val columns = statement.executeQuery("PRAGMA table_info($table)").use { rows ->
+                    buildSet { while (rows.next()) add(rows.getString("name")) }
+                }
+                if ("purge_recovery" !in columns) statement.executeUpdate("ALTER TABLE $table ADD COLUMN purge_recovery INTEGER NOT NULL DEFAULT 0")
+            }
             statement.executeUpdate("CREATE INDEX IF NOT EXISTS index_file_versions_sequence ON file_versions(folder_id, local_sequence)")
             statement.executeUpdate("CREATE INDEX IF NOT EXISTS index_remote_file_versions_sequence ON remote_file_versions(folder_id, device_id, remote_sequence)")
             statement.executeUpdate("CREATE INDEX IF NOT EXISTS index_file_history_created ON file_history(created_at_millis)")
@@ -1337,11 +1381,11 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
     )
     private fun ResultSet.fileVersion() = FileVersion(
         getString(1), getString(2), getString(3), getLong(4), getLong(5), getString(6), getString(7),
-        getInt(8) != 0, VersionVector.fromJson(getString(9)), getString(10), getLong(11),
+        getInt(8) != 0, VersionVector.fromJson(getString(9)), getString(10), getLong(11), getInt(12) != 0,
     )
     private fun ResultSet.remoteFileVersion() = RemoteFileVersion(
         getString(1), getString(2), getString(3), getString(4), getLong(5), getLong(6), getString(7), getString(8),
-        getString(9), getInt(10) != 0, VersionVector.fromJson(getString(11)), getLong(12),
+        getString(9), getInt(10) != 0, VersionVector.fromJson(getString(11)), getLong(12), getInt(13) != 0,
     )
     private fun ResultSet.folderIndexState() = FolderIndexState(
         getString(1), getString(2), getLong(3), getLong(4), getLong(5), getLong(6), getLong(7),

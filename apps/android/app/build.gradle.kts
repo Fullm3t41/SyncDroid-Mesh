@@ -19,6 +19,7 @@ android {
         versionCode = 18
         versionName = "1.2.11"
 
+        manifestPlaceholders["appAuthRedirectScheme"] = "com.syncdroid.app"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
     }
@@ -72,6 +73,8 @@ kotlin {
 }
 
 dependencies {
+    implementation("com.google.android.gms:play-services-auth:21.6.0")
+    implementation("net.openid:appauth:0.11.1")
     implementation(project(":mesh-protocol"))
     implementation(project(":sync-core"))
 

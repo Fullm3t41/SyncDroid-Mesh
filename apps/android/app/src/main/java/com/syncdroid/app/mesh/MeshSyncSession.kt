@@ -12,6 +12,7 @@ import com.syncdroid.app.storage.StorageCapacity
 import com.syncdroid.app.storage.StorageCapacityGuard
 import com.syncdroid.app.storage.StorageSyncWarning
 import com.syncdroid.app.cloud.AndroidFolderKeyStore
+import com.syncdroid.shared.cloud.CloudEncryptedObjects
 import com.syncdroid.app.sync.AtomicFileApplier
 import com.syncdroid.app.sync.BlockManifest
 import com.syncdroid.app.sync.BlockManifestBuilder
@@ -84,7 +85,11 @@ class MeshSyncSession(
         }
     }
 
-    suspend fun runFiles(connection: AuthenticatedPeerConnection): MeshSyncResult {
+    suspend fun runFiles(connection: AuthenticatedPeerConnection): MeshSyncResult = com.syncdroid.app.cloud.CloudTransferGate.mesh {
+        runFilesAdmitted(connection)
+    }
+
+    private suspend fun runFilesAdmitted(connection: AuthenticatedPeerConnection): MeshSyncResult {
         val remoteDeviceId = connection.peer.deviceId
         require(database.meshDao().getDevice(groupId, remoteDeviceId)?.trustState == "TRUSTED") {
             "The connected device is not a trusted member of this mesh"
@@ -158,6 +163,108 @@ class MeshSyncSession(
         }
     }
 
+    suspend fun syncCloudFolder(remote: com.syncdroid.shared.cloud.CloudRemoteStore, folderId: String): com.syncdroid.shared.cloud.CloudTransferResult {
+        val folder = requireNotNull(syncDao.getFolder(folderId))
+        require(folder.groupId == groupId)
+        val binding = requireNotNull(syncDao.getBinding(folderId, identity.deviceId))
+        require(binding.state == "CONFIGURED" && !binding.localLocation.isNullOrBlank()) { "Folder is not configured" }
+        val location = requireNotNull(binding.localLocation)
+        if (!location.startsWith("content://", true)) require(File(location).isDirectory) { "The configured folder is unavailable" }
+        val key = folderKeys.getOrCreate(folderId).shared()
+        scanConfiguredFolders()
+        val parent = remote.ensureFolder(remote.ensureFolder(remote.rootId, "SyncDroid"), folder.displayName)
+        val items = remote.list(parent).associateBy { it.name }
+        var result = com.syncdroid.shared.cloud.CloudTransferResult()
+        for (publisher in database.meshDao().trustedDevices(groupId).filter { it.deviceId != identity.deviceId }) {
+            val manifests = folderKeys.all(folderId).mapNotNull { saved ->
+                val candidateKey = saved.shared()
+                val item = items[CloudEncryptedObjects.manifestName(candidateKey, publisher.deviceId)] ?: return@mapNotNull null
+                require(item.sizeBytes in 1..(64L * 1024 * 1024 + 1024)) { "Cloud manifest is too large" }
+                val temp = File.createTempFile("cloud-manifest-", ".sdenc", transferCache())
+                try {
+                    remote.download(item.id, temp.toPath())
+                    candidateKey to CloudEncryptedObjects.decryptManifest(candidateKey, publisher.deviceId, temp.readBytes())
+                } finally { temp.delete() }
+            }
+            val (sourceKey, manifest) = manifests.maxByOrNull { it.second.publishedAtMillis } ?: continue
+            var blocked = false
+            for (plan in receiveIndexes(publisher.deviceId, listOf(manifest.index))) {
+                require(plan.remote.folderId == folderId)
+                when (plan.action) {
+                    FileSyncAction.Conflict, FileSyncAction.SendLocal -> {
+                        blocked = true
+                        if (plan.action == FileSyncAction.Conflict) result = result.copy(conflicts = result.conflicts + 1)
+                    }
+                    FileSyncAction.Nothing -> if (!blocked) remoteIndexes.acknowledgeRemoteApplied(publisher.deviceId, plan.remote)
+                    FileSyncAction.DownloadRemote -> {
+                        val applier = requireNotNull(binding.fileApplierOrNull(plan)) { "Folder permission is unavailable" }
+                        val before = syncDao.fileVersion(folderId, plan.relativePath)
+                        if (plan.remote.deleted) {
+                            if (plan.remote.purgeRecovery) {
+                                applier.delete(plan.relativePath)
+                                fileHistory.purgeRecoveries(folderId, plan.relativePath)
+                            } else if (before != null && !before.deleted) fileHistory.deleteWithRecovery(binding, listOf(before), publisher.deviceId)
+                            else applier.delete(plan.relativePath)
+                        } else {
+                            check(storageCapacity.warningForIncomingFile(binding, plan.remote.sizeBytes, lowStorageApprovals) == null) {
+                                "Not enough approved free space for this cloud download"
+                            }
+                            val name = if (manifest.publisherScopedFiles) CloudEncryptedObjects.publisherFileName(sourceKey, publisher.deviceId,
+                                plan.remote.fileId, plan.remote.contentSha256)
+                                else CloudEncryptedObjects.fileName(sourceKey, plan.remote.fileId, plan.remote.contentSha256)
+                            val item = items[name] ?: error("Cloud file is missing; retry sync after the other device finishes uploading")
+                            val encrypted = File.createTempFile("cloud-download-", ".sdenc", transferCache())
+                            val plain = File.createTempFile("cloud-download-", ".part", transferCache())
+                            try {
+                                remote.download(item.id, encrypted.toPath())
+                                CloudEncryptedObjects.decryptFile(sourceKey, plan.remote.fileId, plan.remote.contentSha256, encrypted.toPath(), plain.toPath())
+                                plain.inputStream().use { applier.apply(plan.relativePath, it, plan.remote.contentSha256, plan.remote.modifiedAtMillis) }
+                            } finally { encrypted.delete(); plain.delete() }
+                            fileHistory.recordRemoteApplied(plan.remote, before == null || before.deleted)
+                            result = result.copy(downloadedFiles = result.downloadedFiles + 1,
+                                transferredBytes = result.transferredBytes + plan.remote.sizeBytes)
+                        }
+                        remoteIndexes.markRemoteApplied(publisher.deviceId, plan.remote, !blocked)
+                    }
+                }
+            }
+        }
+        val current = buildUpdatesForPeer(emptyList()).single { it.folderId == folderId }
+        val liveNames = mutableSetOf<String>()
+        for (file in current.files.filterNot { it.deleted }) {
+            val name = CloudEncryptedObjects.publisherFileName(key, identity.deviceId, file.fileId, file.contentSha256)
+            liveNames += name
+            if (name in items) continue
+            val direct = binding.directDirectoryOrNull()
+            val staged = if (direct == null) materializeSafRequest(binding,
+                FileTransferMessage.WholeFileRequest(folderId, file.fileId, file.relativePath, file.contentSha256)) else null
+            val root = requireNotNull(direct ?: staged) { "Cloud upload source is unavailable" }
+            val source = File(root, file.relativePath).canonicalFile
+            require(source.toPath().startsWith(root.canonicalFile.toPath()))
+            val encrypted = File.createTempFile("cloud-upload-", ".sdenc", transferCache())
+            try {
+                CloudEncryptedObjects.encryptFile(key, file.fileId, file.contentSha256, source.toPath(), encrypted.toPath())
+                remote.upload(parent, name, encrypted.toPath())
+                result = result.copy(uploadedFiles = result.uploadedFiles + 1, transferredBytes = result.transferredBytes + file.sizeBytes)
+            } finally { encrypted.delete(); staged?.deleteRecursively() }
+        }
+        val manifest = com.syncdroid.shared.cloud.CloudFolderManifest(folderId, folder.displayName, identity.deviceId,
+            System.currentTimeMillis(), current, publisherScopedFiles = true)
+        val temp = File.createTempFile("cloud-publish-", ".sdenc", transferCache())
+        try {
+            temp.writeBytes(CloudEncryptedObjects.encryptManifest(key, manifest))
+            remote.upload(parent, CloudEncryptedObjects.manifestName(key, identity.deviceId), temp.toPath())
+        } finally { temp.delete() }
+        val ledgerId = UUID.nameUUIDFromBytes(parent.toByteArray())
+        com.syncdroid.shared.cloud.CloudRetentionLedger(File(appContext.filesDir, "cloud-retention/$ledgerId.json").toPath())
+            .expiredObjects(items.values, liveNames, folderKeys.all(folderId).map { CloudEncryptedObjects.publisherFilePrefix(it.shared(), identity.deviceId) })
+            .forEach { remote.trash(it.id) }
+        return result
+    }
+
+    private fun com.syncdroid.app.cloud.FolderKeyMaterial.shared() =
+        com.syncdroid.shared.cloud.FolderKeyMaterial(folderId, keyId, bytes)
+
     private suspend fun exchangeMetadata(connection: AuthenticatedPeerConnection): MeshReceiveResult {
         val local = MeshWireCodec.encode(replication.export(groupId, groupName))
         connection.send(MeshSessionCodec.encode(MeshSessionMessage.Metadata(local)))
@@ -166,8 +273,8 @@ class MeshSyncSession(
     }
 
     private suspend fun exchangeFolderKeys(connection: AuthenticatedPeerConnection) {
-        val local = syncDao.folderKeys().map { stored ->
-            folderKeys.getOrCreate(stored.folderId).let { SessionFolderKey(it.folderId, it.keyId, it.bytes) }
+        val local = syncDao.folderKeys().flatMap { stored ->
+            folderKeys.all(stored.folderId).map { SessionFolderKey(it.folderId, it.keyId, it.bytes) }
         }
         connection.send(MeshSessionCodec.encode(MeshSessionMessage.FolderKeys(local)))
         val remote = connection.receiveSession<MeshSessionMessage.FolderKeys>()
@@ -265,6 +372,7 @@ class MeshSyncSession(
             localSequence,
             manifest?.blockSizeBytes ?: 0,
             manifest?.blocks ?: emptyList(),
+            purgeRecovery,
         )
     }
 
@@ -362,7 +470,10 @@ class MeshSyncSession(
                     }
                     val localBefore = syncDao.fileVersion(folderId, plan.relativePath)
                     if (plan.remote.deleted) {
-                        if (localBefore != null && !localBefore.deleted) {
+                        if (plan.remote.purgeRecovery) {
+                            applier.delete(plan.relativePath)
+                            fileHistory.purgeRecoveries(folderId, plan.relativePath)
+                        } else if (localBefore != null && !localBefore.deleted) {
                             fileHistory.deleteWithRecovery(
                                 binding = binding,
                                 versions = listOf(localBefore),

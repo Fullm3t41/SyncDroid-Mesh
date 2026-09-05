@@ -30,6 +30,7 @@ data class IndexedFileRecord(
     val sequence: Long,
     val blockSizeBytes: Int = 0,
     val blocks: List<FileBlock> = emptyList(),
+    val purgeRecovery: Boolean = false,
 )
 
 data class FolderIndexUpdate(
@@ -97,9 +98,10 @@ object MeshSessionWireCodec {
                     }
                 }
                 is MeshSessionMessage.IndexBatch -> {
-                    output.writeByte(INDEX_BATCH)
+                    val extended = message.updates.any { update -> update.files.any { it.purgeRecovery } }
+                    output.writeByte(if (extended) INDEX_BATCH_PERMANENT else INDEX_BATCH)
                     output.writeCount(message.updates.size)
-                    message.updates.forEach { output.writeUpdate(it) }
+                    message.updates.forEach { output.writeUpdate(it, extended) }
                 }
                 is MeshSessionMessage.TransferPlan -> {
                     require(message.requestCount in 0..MAX_REQUESTS)
@@ -161,6 +163,7 @@ object MeshSessionWireCodec {
                 )
             })
             INDEX_BATCH -> MeshSessionMessage.IndexBatch(List(input.readCount()) { input.readUpdate() })
+            INDEX_BATCH_PERMANENT -> MeshSessionMessage.IndexBatch(List(input.readCount()) { input.readUpdate(true) })
             TRANSFER_PLAN -> MeshSessionMessage.TransferPlan(input.readInt().also { require(it in 0..MAX_REQUESTS) })
             FOLDER_KEYS -> MeshSessionMessage.FolderKeys(List(input.readCount()) {
                 SessionFolderKey(input.readString(), input.readString(), input.readData().also { require(it.size == 32) })
@@ -185,7 +188,7 @@ object MeshSessionWireCodec {
         message
     }
 
-    private fun DataOutputStream.writeUpdate(update: FolderIndexUpdate) {
+    private fun DataOutputStream.writeUpdate(update: FolderIndexUpdate, extended: Boolean) {
         writeString(update.folderId)
         writeLong(update.indexEpoch)
         writeLong(update.previousSequence)
@@ -193,6 +196,7 @@ object MeshSessionWireCodec {
         writeBoolean(update.fullIndex)
         writeCount(update.files.size)
         update.files.forEach { file ->
+            require(!file.purgeRecovery || file.deleted) { "Recovery purge requires a deletion" }
             writeString(file.relativePath)
             writeString(file.fileId)
             writeLong(file.sizeBytes)
@@ -211,10 +215,11 @@ object MeshSessionWireCodec {
                 writeInt(block.sizeBytes)
                 writeString(block.sha256)
             }
+            if (extended) writeBoolean(file.purgeRecovery)
         }
     }
 
-    private fun DataInputStream.readUpdate(): FolderIndexUpdate {
+    private fun DataInputStream.readUpdate(extended: Boolean = false): FolderIndexUpdate {
         val folderId = readString()
         val epoch = readLong()
         val previous = readLong()
@@ -234,6 +239,7 @@ object MeshSessionWireCodec {
                 sequence = readLong(),
                 blockSizeBytes = readInt(),
                 blocks = List(readCount()) { FileBlock(readInt(), readLong(), readInt(), readString()) },
+                purgeRecovery = extended && readBoolean(),
             )
         }
         return FolderIndexUpdate(folderId, epoch, previous, last, full, files)
@@ -290,6 +296,7 @@ object MeshSessionWireCodec {
     private const val UPDATE_CHUNK = 8
     private const val UPDATE_PHASE_DONE = 9
     private const val FOLDER_KEYS = 10
+    private const val INDEX_BATCH_PERMANENT = 11
     private const val ERROR = 127
     private const val MAX_ITEMS = 50_000
     private const val MAX_REQUESTS = 1_000_000

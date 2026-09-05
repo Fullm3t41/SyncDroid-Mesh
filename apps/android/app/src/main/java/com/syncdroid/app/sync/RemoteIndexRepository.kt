@@ -23,6 +23,11 @@ data class FileSyncPlan(
 )
 
 fun decideFileSync(local: FileVersionEntity?, remote: RemoteFileVersionEntity): Pair<FileSyncAction, String> {
+    require(!remote.purgeRecovery || remote.deleted) { "Recovery purge requires a deletion" }
+    if (remote.purgeRecovery && local?.deleted != false && local?.purgeRecovery != true &&
+        (local == null || VersionVector.fromJson(local.versionVectorJson).relationTo(VersionVector.fromJson(remote.versionVectorJson)) != com.syncdroid.shared.protocol.CausalRelation.After)) {
+        return FileSyncAction.DownloadRemote to "Removing recovery copies for a permanent deletion"
+    }
     val decision = decideSharedFileSync(
         local = local?.let {
             FileSyncState(it.deleted, it.contentSha256, it.previousContentSha256, VersionVector.fromJson(it.versionVectorJson))
@@ -188,6 +193,7 @@ class RemoteIndexRepository(
                     appliedVector,
                     remote.originDeviceId.ifBlank { remoteDeviceId },
                     nextSequence,
+                    remote.purgeRecovery,
                 ),
             )
             syncDao.upsertFolderIndexState(localState.copy(
@@ -243,6 +249,7 @@ private fun IndexedFileRecord.toEntity(folderId: String, deviceId: String) = Rem
     deleted,
     version.toJson(),
     sequence,
+    purgeRecovery,
 )
 
 private fun randomEpoch(): Long = (SecureRandom().nextLong() and Long.MAX_VALUE).coerceAtLeast(1)

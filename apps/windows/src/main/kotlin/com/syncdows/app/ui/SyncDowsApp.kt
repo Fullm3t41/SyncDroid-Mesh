@@ -153,6 +153,8 @@ fun SyncDowsApp(
                             },
                             accounts = meshState.cloudAccounts,
                             busy = meshState.busy,
+                            onSyncNow = { runtime.syncCloudNow() },
+                            status = meshState.status,
                             onConnect = runtime::connectCloud,
                             onDisconnect = runtime::disconnectCloud,
                             onBack = { secondaryScreen = null },
@@ -240,6 +242,8 @@ fun SyncDowsApp(
                             )
                             MainSection.Folders -> FoldersScreen(
                                 folders = meshState.folders,
+                                loadDeleteFiles = runtime::filesForMeshDeletion,
+                                onDeleteFiles = runtime::deleteFilesFromAllDevices,
                                 cloudPolicy = cloudPolicy,
                                 onAddFolder = { showAddFolder = true },
                                 onConfigureFolder = { folderToConfigure = it },

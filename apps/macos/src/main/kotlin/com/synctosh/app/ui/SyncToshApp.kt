@@ -151,6 +151,8 @@ fun SyncToshApp(
                             },
                             accounts = meshState.cloudAccounts,
                             busy = meshState.busy,
+                            onSyncNow = { runtime.syncCloudNow() },
+                            status = meshState.status,
                             onConnect = runtime::connectCloud,
                             onDisconnect = runtime::disconnectCloud,
                             onBack = { secondaryScreen = null },
@@ -214,6 +216,8 @@ fun SyncToshApp(
                             )
                             MainSection.Folders -> FoldersScreen(
                                 folders = meshState.folders,
+                                loadDeleteFiles = runtime::filesForMeshDeletion,
+                                onDeleteFiles = runtime::deleteFilesFromAllDevices,
                                 cloudPolicy = cloudPolicy,
                                 onAddFolder = { featureNotice = "Folder access" },
                                 onConfigureFolder = { folderToConfigure = it },

@@ -11,6 +11,25 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 class CloudTransferOrchestratorTest {
+    @Test fun unregisteredNetworkRequiresManualRequest() = runBlocking {
+        var calls = 0
+        var registered = false
+        val sync = CloudTransferOrchestrator(
+            policy = { CloudSyncPolicy(CloudSyncScope.ALL_FOLDERS) }, folderIds = { listOf("folder") },
+            connectedProviders = { listOf(CloudProvider.GOOGLE_DRIVE) },
+            runner = CloudTransferRunner { _, _ -> calls++; CloudTransferResult() },
+            automaticAllowed = { registered },
+        )
+        sync.run(CloudSyncTrigger.SCHEDULED_WINDOW)
+        sync.run(CloudSyncTrigger.LOCAL_CHANGE)
+        assertEquals(0, calls)
+        sync.run(CloudSyncTrigger.MANUAL)
+        assertEquals(1, calls)
+        registered = true
+        sync.run(CloudSyncTrigger.SCHEDULED_WINDOW)
+        assertEquals(2, calls)
+    }
+
     @Test fun shutdownWaitsForActiveRunAndRejectsQueuedWork() = runBlocking {
         withTimeout(5_000) {
             val started = CompletableDeferred<Unit>()
