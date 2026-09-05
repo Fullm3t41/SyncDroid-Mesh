@@ -9,6 +9,20 @@ class MeshUpdateExchange(private val cache: MeshUpdateCache) {
         send: suspend (MeshSessionMessage) -> Unit,
         receive: suspend () -> MeshSessionMessage,
     ) {
+        val exchange = cache.openExchange()
+        try {
+            MeshUpdateExchange(exchange).runPinned(localDeviceId, remoteDeviceId, send, receive)
+        } finally {
+            exchange.closeExchange()
+        }
+    }
+
+    private suspend fun runPinned(
+        localDeviceId: String,
+        remoteDeviceId: String,
+        send: suspend (MeshSessionMessage) -> Unit,
+        receive: suspend () -> MeshSessionMessage,
+    ) {
         send(MeshSessionMessage.UpdateInventory(cache.availableAssets()))
         val remoteAssets = (receive() as? MeshSessionMessage.UpdateInventory)?.assets
             ?: error("Peer did not send an update inventory")

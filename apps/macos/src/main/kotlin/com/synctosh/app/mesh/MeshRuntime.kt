@@ -597,7 +597,7 @@ class MeshRuntime(
                                 }
                             }
                         },
-                    ).run(connection, remoteId)
+                    ).runFiles(connection, remoteId)
                     lastSessionAtMillis[remoteId] = System.currentTimeMillis()
                     val conflicts = store.unresolvedConflicts().size
                     refresh(if (conflicts == 0) "Files synced" else "$conflicts file conflict${if (conflicts == 1) "" else "s"} need review")
@@ -610,6 +610,8 @@ class MeshRuntime(
                         )
                     }
                 }
+                // Keep the peer authenticated and tracked, but let other peers sync files meanwhile.
+                exchangeMeshUpdates(updateCache, identity.deviceId, remoteId, connection)
             } finally {
                 sessionProgress.remove(remoteId)
                 activeSessions.remove(remoteId)
