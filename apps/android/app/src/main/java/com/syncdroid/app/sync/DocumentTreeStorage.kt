@@ -66,7 +66,11 @@ class DocumentTreeFileApplier(
     }
 
     override fun delete(relativePath: String) {
-        find(safeParts(relativePath))?.let { require(it.isFile && it.delete()) { "Could not delete synced document" } }
+        find(safeParts(relativePath))?.let { document ->
+            require(document.isFile)
+            expectedContent?.verify(requireNotNull(context.contentResolver.openInputStream(document.uri)).use(FileHasher::sha256))
+            require(document.delete()) { "Could not delete synced document" }
+        }
     }
 
     fun open(relativePath: String): InputStream? = find(safeParts(relativePath))?.takeIf(DocumentFile::isFile)?.let {

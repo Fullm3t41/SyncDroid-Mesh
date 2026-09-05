@@ -3,6 +3,7 @@ package com.syncdroid.app.ui
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -22,7 +23,6 @@ import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.InsertDriveFile
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -63,6 +63,7 @@ fun ConfiguredFolderContentsScreen(
     loadVersions: suspend () -> List<FileVersionEntity>,
     onExclude: suspend (List<String>) -> Unit,
     onDelete: suspend (List<String>) -> Unit,
+    onDeleteEverywhere: suspend (List<String>, Boolean) -> Unit,
     onFilesChanged: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
@@ -78,6 +79,7 @@ fun ConfiguredFolderContentsScreen(
     var refreshKey by remember { mutableIntStateOf(0) }
     var error by remember { mutableStateOf(sourceResult.exceptionOrNull()?.message) }
     var showDeleteDialog by remember { mutableStateOf(false) }
+    var showPermanentDeleteDialog by remember { mutableStateOf(false) }
     var removing by remember { mutableStateOf(false) }
 
     LaunchedEffect(currentDirectory, refreshKey, source) {
@@ -103,22 +105,24 @@ fun ConfiguredFolderContentsScreen(
         }
     }
 
-    fun removeSelected(exclude: Boolean) {
+    fun removeSelected(exclude: Boolean, everywhere: Boolean = false, permanent: Boolean = false) {
         val paths = selectedPaths.toList()
         if (paths.isEmpty() || source == null) return
         scope.launch {
             removing = true
             runCatching {
                 if (exclude) onExclude(paths)
-                onDelete(paths)
+                if (everywhere) onDeleteEverywhere(paths, permanent) else onDelete(paths)
             }.onSuccess {
                 selectedPaths = emptySet()
                 showDeleteDialog = false
+                showPermanentDeleteDialog = false
                 refreshKey++
                 onFilesChanged()
             }.onFailure {
                 error = it.message ?: "Could not remove the selected files"
                 showDeleteDialog = false
+                showPermanentDeleteDialog = false
             }
             removing = false
         }
@@ -140,12 +144,23 @@ fun ConfiguredFolderContentsScreen(
         },
         floatingActionButton = {
             if (selectedPaths.isNotEmpty()) {
-                FloatingActionButton(
-                    onClick = { showDeleteDialog = true },
-                    containerColor = MaterialTheme.colorScheme.error,
+                Surface(
+                    modifier = Modifier.size(56.dp).combinedClickable(
+                        enabled = !removing,
+                        role = androidx.compose.ui.semantics.Role.Button,
+                        onClickLabel = "Delete selected files",
+                        onLongClickLabel = "Permanently delete from all devices",
+                        onClick = { showDeleteDialog = true },
+                        onLongClick = { showPermanentDeleteDialog = true },
+                    ),
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.error,
                     contentColor = MaterialTheme.colorScheme.onError,
+                    shadowElevation = 6.dp,
                 ) {
-                    Icon(Icons.Rounded.Delete, contentDescription = "Delete selected files")
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(Icons.Rounded.Delete, contentDescription = "Delete selected files")
+                    }
                 }
             }
         },
@@ -161,7 +176,7 @@ fun ConfiguredFolderContentsScreen(
                         style = MaterialTheme.typography.titleMedium,
                     )
                     Text(
-                        "Hold a file to select it. Synced from identifies the device that made the latest edit.",
+                        "Hold a file to select it. Hold the bin to permanently delete the selection across all devices. Synced from identifies the device that made the latest edit.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -219,13 +234,28 @@ fun ConfiguredFolderContentsScreen(
         }
     }
 
+    if (showPermanentDeleteDialog) {
+        AlertDialog(
+            onDismissRequest = { if (!removing) showPermanentDeleteDialog = false },
+            title = { Text("Permanently delete from all devices?") },
+            text = { Text("Delete ${selectedPaths.size} selected file(s) and their SyncDroid recovery copies on every device’s next sync? This cannot be undone through File history. Independently edited copies require conflict review. All devices need this app version; cloud-provider backups or trash may remain.") },
+            confirmButton = {
+                TextButton(enabled = !removing, onClick = { removeSelected(exclude = false, everywhere = true, permanent = true) }) {
+                    Text("Delete permanently", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = { TextButton(enabled = !removing, onClick = { showPermanentDeleteDialog = false }) { Text("Cancel") } },
+        )
+    }
+
     if (showDeleteDialog) {
         AlertDialog(
             onDismissRequest = { if (!removing) showDeleteDialog = false },
             title = { Text("Remove ${selectedPaths.size} ${if (selectedPaths.size == 1) "file" else "files"}?") },
             text = {
                 Column {
-                    Text("Delete removes the local files and applies this folder’s deletion rule.")
+                    Text("Delete from all devices applies on each device’s next sync, including cloud sync, even in overwrite-only folders. Independently edited copies need conflict review. Recovery copies are kept for 30 days.")
+                    Text("Delete using folder rule follows the folder setting: normal folders share the deletion; overwrite-only folders keep the other copies.", modifier = Modifier.padding(top = 10.dp))
                     if (folder.supportsFolderSettings) {
                         Text(
                             "Delete & exclude also records exceptions so these paths are not restored by future syncs. You can undo them in Folder settings.",
@@ -236,8 +266,11 @@ fun ConfiguredFolderContentsScreen(
             },
             confirmButton = {
                 Column(horizontalAlignment = Alignment.End) {
+                    TextButton(onClick = { removeSelected(exclude = false, everywhere = true) }, enabled = !removing) {
+                        Text("Delete from all devices", color = MaterialTheme.colorScheme.error)
+                    }
                     TextButton(onClick = { removeSelected(exclude = false) }, enabled = !removing) {
-                        Text("Delete", color = MaterialTheme.colorScheme.error)
+                        Text("Delete using folder rule", color = MaterialTheme.colorScheme.error)
                     }
                     if (folder.supportsFolderSettings) {
                         TextButton(onClick = { removeSelected(exclude = true) }, enabled = !removing) {

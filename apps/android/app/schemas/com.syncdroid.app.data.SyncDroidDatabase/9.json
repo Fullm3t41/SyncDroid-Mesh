@@ -1,0 +1,1816 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 9,
+    "identityHash": "2b8653103d16c88d3a4f4af71f730527",
+    "entities": [
+      {
+        "tableName": "mesh_groups",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`groupId` TEXT NOT NULL, `displayName` TEXT NOT NULL, `createdAtMillis` INTEGER NOT NULL, PRIMARY KEY(`groupId`))",
+        "fields": [
+          {
+            "fieldPath": "groupId",
+            "columnName": "groupId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "displayName",
+            "columnName": "displayName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtMillis",
+            "columnName": "createdAtMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "groupId"
+          ]
+        }
+      },
+      {
+        "tableName": "devices",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`groupId` TEXT NOT NULL, `deviceId` TEXT NOT NULL, `displayName` TEXT NOT NULL, `publicKeyBase64` TEXT NOT NULL, `fingerprint` TEXT NOT NULL, `trustState` TEXT NOT NULL, `addedByDeviceId` TEXT NOT NULL, `addedAtMillis` INTEGER NOT NULL, `lastSeenAtMillis` INTEGER, PRIMARY KEY(`groupId`, `deviceId`), FOREIGN KEY(`groupId`) REFERENCES `mesh_groups`(`groupId`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "groupId",
+            "columnName": "groupId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "deviceId",
+            "columnName": "deviceId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "displayName",
+            "columnName": "displayName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "publicKeyBase64",
+            "columnName": "publicKeyBase64",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fingerprint",
+            "columnName": "fingerprint",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "trustState",
+            "columnName": "trustState",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "addedByDeviceId",
+            "columnName": "addedByDeviceId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "addedAtMillis",
+            "columnName": "addedAtMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastSeenAtMillis",
+            "columnName": "lastSeenAtMillis",
+            "affinity": "INTEGER"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "groupId",
+            "deviceId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_devices_deviceId",
+            "unique": false,
+            "columnNames": [
+              "deviceId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_devices_deviceId` ON `${TABLE_NAME}` (`deviceId`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "mesh_groups",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "groupId"
+            ],
+            "referencedColumns": [
+              "groupId"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "membership_events",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`eventId` TEXT NOT NULL, `groupId` TEXT NOT NULL, `eventType` TEXT NOT NULL, `subjectDeviceId` TEXT NOT NULL, `subjectDisplayName` TEXT NOT NULL, `subjectPublicKeyBase64` TEXT NOT NULL, `signerDeviceId` TEXT NOT NULL, `signatureBase64` TEXT NOT NULL, `parentEventIdsJson` TEXT NOT NULL, `versionVectorJson` TEXT NOT NULL, `createdAtMillis` INTEGER NOT NULL, PRIMARY KEY(`eventId`))",
+        "fields": [
+          {
+            "fieldPath": "eventId",
+            "columnName": "eventId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "groupId",
+            "columnName": "groupId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "eventType",
+            "columnName": "eventType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "subjectDeviceId",
+            "columnName": "subjectDeviceId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "subjectDisplayName",
+            "columnName": "subjectDisplayName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "subjectPublicKeyBase64",
+            "columnName": "subjectPublicKeyBase64",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "signerDeviceId",
+            "columnName": "signerDeviceId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "signatureBase64",
+            "columnName": "signatureBase64",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "parentEventIdsJson",
+            "columnName": "parentEventIdsJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "versionVectorJson",
+            "columnName": "versionVectorJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtMillis",
+            "columnName": "createdAtMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "eventId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_membership_events_groupId",
+            "unique": false,
+            "columnNames": [
+              "groupId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_membership_events_groupId` ON `${TABLE_NAME}` (`groupId`)"
+          },
+          {
+            "name": "index_membership_events_subjectDeviceId",
+            "unique": false,
+            "columnNames": [
+              "subjectDeviceId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_membership_events_subjectDeviceId` ON `${TABLE_NAME}` (`subjectDeviceId`)"
+          }
+        ]
+      },
+      {
+        "tableName": "chat_messages",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`messageId` TEXT NOT NULL, `groupId` TEXT NOT NULL, `authorDeviceId` TEXT NOT NULL, `body` TEXT NOT NULL, `createdAtMillis` INTEGER NOT NULL, `signatureBase64` TEXT NOT NULL, `attachmentFileName` TEXT, `attachmentMediaType` TEXT, `attachmentSizeBytes` INTEGER, `attachmentSha256` TEXT, `attachmentExpiresAtMillis` INTEGER, PRIMARY KEY(`messageId`), FOREIGN KEY(`groupId`) REFERENCES `mesh_groups`(`groupId`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "messageId",
+            "columnName": "messageId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "groupId",
+            "columnName": "groupId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "authorDeviceId",
+            "columnName": "authorDeviceId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "body",
+            "columnName": "body",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtMillis",
+            "columnName": "createdAtMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "signatureBase64",
+            "columnName": "signatureBase64",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "attachmentFileName",
+            "columnName": "attachmentFileName",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "attachmentMediaType",
+            "columnName": "attachmentMediaType",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "attachmentSizeBytes",
+            "columnName": "attachmentSizeBytes",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "attachmentSha256",
+            "columnName": "attachmentSha256",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "attachmentExpiresAtMillis",
+            "columnName": "attachmentExpiresAtMillis",
+            "affinity": "INTEGER"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "messageId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_chat_messages_groupId",
+            "unique": false,
+            "columnNames": [
+              "groupId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_chat_messages_groupId` ON `${TABLE_NAME}` (`groupId`)"
+          },
+          {
+            "name": "index_chat_messages_authorDeviceId",
+            "unique": false,
+            "columnNames": [
+              "authorDeviceId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_chat_messages_authorDeviceId` ON `${TABLE_NAME}` (`authorDeviceId`)"
+          },
+          {
+            "name": "index_chat_messages_createdAtMillis",
+            "unique": false,
+            "columnNames": [
+              "createdAtMillis"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_chat_messages_createdAtMillis` ON `${TABLE_NAME}` (`createdAtMillis`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "mesh_groups",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "groupId"
+            ],
+            "referencedColumns": [
+              "groupId"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "sync_folders",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`folderId` TEXT NOT NULL, `groupId` TEXT NOT NULL, `displayName` TEXT NOT NULL, `includePatternsJson` TEXT NOT NULL, `excludePatternsJson` TEXT NOT NULL, `enabled` INTEGER NOT NULL, `deletionPolicy` TEXT NOT NULL DEFAULT 'PROPAGATE', `createdByDeviceId` TEXT NOT NULL, `versionVectorJson` TEXT NOT NULL, `createdAtMillis` INTEGER NOT NULL, PRIMARY KEY(`folderId`), FOREIGN KEY(`groupId`) REFERENCES `mesh_groups`(`groupId`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "folderId",
+            "columnName": "folderId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "groupId",
+            "columnName": "groupId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "displayName",
+            "columnName": "displayName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "includePatternsJson",
+            "columnName": "includePatternsJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "excludePatternsJson",
+            "columnName": "excludePatternsJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "enabled",
+            "columnName": "enabled",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "deletionPolicy",
+            "columnName": "deletionPolicy",
+            "affinity": "TEXT",
+            "notNull": true,
+            "defaultValue": "'PROPAGATE'"
+          },
+          {
+            "fieldPath": "createdByDeviceId",
+            "columnName": "createdByDeviceId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "versionVectorJson",
+            "columnName": "versionVectorJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtMillis",
+            "columnName": "createdAtMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "folderId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_sync_folders_groupId",
+            "unique": false,
+            "columnNames": [
+              "groupId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sync_folders_groupId` ON `${TABLE_NAME}` (`groupId`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "mesh_groups",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "groupId"
+            ],
+            "referencedColumns": [
+              "groupId"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "local_folder_bindings",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`folderId` TEXT NOT NULL, `deviceId` TEXT NOT NULL, `localLocation` TEXT, `state` TEXT NOT NULL, `updatedAtMillis` INTEGER NOT NULL, PRIMARY KEY(`folderId`, `deviceId`), FOREIGN KEY(`folderId`) REFERENCES `sync_folders`(`folderId`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "folderId",
+            "columnName": "folderId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "deviceId",
+            "columnName": "deviceId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "localLocation",
+            "columnName": "localLocation",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "state",
+            "columnName": "state",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAtMillis",
+            "columnName": "updatedAtMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "folderId",
+            "deviceId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_local_folder_bindings_deviceId",
+            "unique": false,
+            "columnNames": [
+              "deviceId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_local_folder_bindings_deviceId` ON `${TABLE_NAME}` (`deviceId`)"
+          },
+          {
+            "name": "index_local_folder_bindings_state",
+            "unique": false,
+            "columnNames": [
+              "state"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_local_folder_bindings_state` ON `${TABLE_NAME}` (`state`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "sync_folders",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "folderId"
+            ],
+            "referencedColumns": [
+              "folderId"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "sync_exceptions",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`folderId` TEXT NOT NULL, `relativePath` TEXT NOT NULL, `active` INTEGER NOT NULL, `createdByDeviceId` TEXT NOT NULL, `createdAtMillis` INTEGER NOT NULL, `updatedAtMillis` INTEGER NOT NULL, `versionVectorJson` TEXT NOT NULL, `lastEventId` TEXT NOT NULL DEFAULT '', PRIMARY KEY(`folderId`, `relativePath`), FOREIGN KEY(`folderId`) REFERENCES `sync_folders`(`folderId`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "folderId",
+            "columnName": "folderId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "relativePath",
+            "columnName": "relativePath",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "active",
+            "columnName": "active",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdByDeviceId",
+            "columnName": "createdByDeviceId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtMillis",
+            "columnName": "createdAtMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAtMillis",
+            "columnName": "updatedAtMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "versionVectorJson",
+            "columnName": "versionVectorJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastEventId",
+            "columnName": "lastEventId",
+            "affinity": "TEXT",
+            "notNull": true,
+            "defaultValue": "''"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "folderId",
+            "relativePath"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_sync_exceptions_active",
+            "unique": false,
+            "columnNames": [
+              "active"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sync_exceptions_active` ON `${TABLE_NAME}` (`active`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "sync_folders",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "folderId"
+            ],
+            "referencedColumns": [
+              "folderId"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "folder_announcements",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`eventId` TEXT NOT NULL, `groupId` TEXT NOT NULL, `folderId` TEXT NOT NULL, `displayName` TEXT NOT NULL, `includePatternsJson` TEXT NOT NULL, `excludePatternsJson` TEXT NOT NULL, `signerDeviceId` TEXT NOT NULL, `signatureBase64` TEXT NOT NULL, `versionVectorJson` TEXT NOT NULL, `createdAtMillis` INTEGER NOT NULL, PRIMARY KEY(`eventId`))",
+        "fields": [
+          {
+            "fieldPath": "eventId",
+            "columnName": "eventId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "groupId",
+            "columnName": "groupId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "folderId",
+            "columnName": "folderId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "displayName",
+            "columnName": "displayName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "includePatternsJson",
+            "columnName": "includePatternsJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "excludePatternsJson",
+            "columnName": "excludePatternsJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "signerDeviceId",
+            "columnName": "signerDeviceId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "signatureBase64",
+            "columnName": "signatureBase64",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "versionVectorJson",
+            "columnName": "versionVectorJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtMillis",
+            "columnName": "createdAtMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "eventId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_folder_announcements_groupId",
+            "unique": false,
+            "columnNames": [
+              "groupId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_folder_announcements_groupId` ON `${TABLE_NAME}` (`groupId`)"
+          },
+          {
+            "name": "index_folder_announcements_folderId",
+            "unique": false,
+            "columnNames": [
+              "folderId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_folder_announcements_folderId` ON `${TABLE_NAME}` (`folderId`)"
+          }
+        ]
+      },
+      {
+        "tableName": "sync_endpoints",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`endpointId` TEXT NOT NULL, `folderId` TEXT NOT NULL, `endpointType` TEXT NOT NULL, `direction` TEXT NOT NULL, `accountId` TEXT, `remoteRootId` TEXT, `enabled` INTEGER NOT NULL, `changeCursor` TEXT, PRIMARY KEY(`endpointId`), FOREIGN KEY(`folderId`) REFERENCES `sync_folders`(`folderId`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "endpointId",
+            "columnName": "endpointId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "folderId",
+            "columnName": "folderId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "endpointType",
+            "columnName": "endpointType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "direction",
+            "columnName": "direction",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "accountId",
+            "columnName": "accountId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "remoteRootId",
+            "columnName": "remoteRootId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "enabled",
+            "columnName": "enabled",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "changeCursor",
+            "columnName": "changeCursor",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "endpointId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_sync_endpoints_folderId",
+            "unique": false,
+            "columnNames": [
+              "folderId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sync_endpoints_folderId` ON `${TABLE_NAME}` (`folderId`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "sync_folders",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "folderId"
+            ],
+            "referencedColumns": [
+              "folderId"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "snapshots",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`snapshotId` TEXT NOT NULL, `folderId` TEXT NOT NULL, `originDeviceId` TEXT NOT NULL, `createdAtMillis` INTEGER NOT NULL, `versionVectorJson` TEXT NOT NULL, `parentSnapshotIdsJson` TEXT NOT NULL, `state` TEXT NOT NULL, PRIMARY KEY(`snapshotId`), FOREIGN KEY(`folderId`) REFERENCES `sync_folders`(`folderId`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "snapshotId",
+            "columnName": "snapshotId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "folderId",
+            "columnName": "folderId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "originDeviceId",
+            "columnName": "originDeviceId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtMillis",
+            "columnName": "createdAtMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "versionVectorJson",
+            "columnName": "versionVectorJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "parentSnapshotIdsJson",
+            "columnName": "parentSnapshotIdsJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "state",
+            "columnName": "state",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "snapshotId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_snapshots_folderId",
+            "unique": false,
+            "columnNames": [
+              "folderId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_snapshots_folderId` ON `${TABLE_NAME}` (`folderId`)"
+          },
+          {
+            "name": "index_snapshots_createdAtMillis",
+            "unique": false,
+            "columnNames": [
+              "createdAtMillis"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_snapshots_createdAtMillis` ON `${TABLE_NAME}` (`createdAtMillis`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "sync_folders",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "folderId"
+            ],
+            "referencedColumns": [
+              "folderId"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "snapshot_files",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`snapshotId` TEXT NOT NULL, `relativePath` TEXT NOT NULL, `sizeBytes` INTEGER NOT NULL, `modifiedAtMillis` INTEGER NOT NULL, `sha256` TEXT NOT NULL, `deleted` INTEGER NOT NULL, `fileId` TEXT NOT NULL DEFAULT '', `previousSha256` TEXT, `versionVectorJson` TEXT NOT NULL DEFAULT '{}', `localSequence` INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(`snapshotId`, `relativePath`), FOREIGN KEY(`snapshotId`) REFERENCES `snapshots`(`snapshotId`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "snapshotId",
+            "columnName": "snapshotId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "relativePath",
+            "columnName": "relativePath",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sizeBytes",
+            "columnName": "sizeBytes",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "modifiedAtMillis",
+            "columnName": "modifiedAtMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sha256",
+            "columnName": "sha256",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "deleted",
+            "columnName": "deleted",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fileId",
+            "columnName": "fileId",
+            "affinity": "TEXT",
+            "notNull": true,
+            "defaultValue": "''"
+          },
+          {
+            "fieldPath": "previousSha256",
+            "columnName": "previousSha256",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "versionVectorJson",
+            "columnName": "versionVectorJson",
+            "affinity": "TEXT",
+            "notNull": true,
+            "defaultValue": "'{}'"
+          },
+          {
+            "fieldPath": "localSequence",
+            "columnName": "localSequence",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "snapshotId",
+            "relativePath"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_snapshot_files_sha256",
+            "unique": false,
+            "columnNames": [
+              "sha256"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_snapshot_files_sha256` ON `${TABLE_NAME}` (`sha256`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "snapshots",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "snapshotId"
+            ],
+            "referencedColumns": [
+              "snapshotId"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "conflicts",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`conflictId` TEXT NOT NULL, `folderId` TEXT NOT NULL, `relativePath` TEXT, `leftSnapshotId` TEXT NOT NULL, `rightSnapshotId` TEXT NOT NULL, `state` TEXT NOT NULL, `createdAtMillis` INTEGER NOT NULL, `resolvedAtMillis` INTEGER, `renamedRelativePath` TEXT DEFAULT NULL, PRIMARY KEY(`conflictId`))",
+        "fields": [
+          {
+            "fieldPath": "conflictId",
+            "columnName": "conflictId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "folderId",
+            "columnName": "folderId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "relativePath",
+            "columnName": "relativePath",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "leftSnapshotId",
+            "columnName": "leftSnapshotId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "rightSnapshotId",
+            "columnName": "rightSnapshotId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "state",
+            "columnName": "state",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtMillis",
+            "columnName": "createdAtMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "resolvedAtMillis",
+            "columnName": "resolvedAtMillis",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "renamedRelativePath",
+            "columnName": "renamedRelativePath",
+            "affinity": "TEXT",
+            "defaultValue": "NULL"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "conflictId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_conflicts_folderId",
+            "unique": false,
+            "columnNames": [
+              "folderId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_conflicts_folderId` ON `${TABLE_NAME}` (`folderId`)"
+          },
+          {
+            "name": "index_conflicts_state",
+            "unique": false,
+            "columnNames": [
+              "state"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_conflicts_state` ON `${TABLE_NAME}` (`state`)"
+          }
+        ]
+      },
+      {
+        "tableName": "activity_events",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`eventId` TEXT NOT NULL, `category` TEXT NOT NULL, `title` TEXT NOT NULL, `detail` TEXT NOT NULL, `createdAtMillis` INTEGER NOT NULL, `action` TEXT NOT NULL DEFAULT 'INFO', `folderId` TEXT DEFAULT NULL, `relativePath` TEXT DEFAULT NULL, `sourceDeviceId` TEXT DEFAULT NULL, `sizeBytes` INTEGER DEFAULT NULL, `modifiedAtMillis` INTEGER DEFAULT NULL, `contentSha256` TEXT DEFAULT NULL, `recoveryPath` TEXT DEFAULT NULL, `recoverableUntilMillis` INTEGER DEFAULT NULL, `recoveredAtMillis` INTEGER DEFAULT NULL, PRIMARY KEY(`eventId`))",
+        "fields": [
+          {
+            "fieldPath": "eventId",
+            "columnName": "eventId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "category",
+            "columnName": "category",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "title",
+            "columnName": "title",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "detail",
+            "columnName": "detail",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtMillis",
+            "columnName": "createdAtMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "action",
+            "columnName": "action",
+            "affinity": "TEXT",
+            "notNull": true,
+            "defaultValue": "'INFO'"
+          },
+          {
+            "fieldPath": "folderId",
+            "columnName": "folderId",
+            "affinity": "TEXT",
+            "defaultValue": "NULL"
+          },
+          {
+            "fieldPath": "relativePath",
+            "columnName": "relativePath",
+            "affinity": "TEXT",
+            "defaultValue": "NULL"
+          },
+          {
+            "fieldPath": "sourceDeviceId",
+            "columnName": "sourceDeviceId",
+            "affinity": "TEXT",
+            "defaultValue": "NULL"
+          },
+          {
+            "fieldPath": "sizeBytes",
+            "columnName": "sizeBytes",
+            "affinity": "INTEGER",
+            "defaultValue": "NULL"
+          },
+          {
+            "fieldPath": "modifiedAtMillis",
+            "columnName": "modifiedAtMillis",
+            "affinity": "INTEGER",
+            "defaultValue": "NULL"
+          },
+          {
+            "fieldPath": "contentSha256",
+            "columnName": "contentSha256",
+            "affinity": "TEXT",
+            "defaultValue": "NULL"
+          },
+          {
+            "fieldPath": "recoveryPath",
+            "columnName": "recoveryPath",
+            "affinity": "TEXT",
+            "defaultValue": "NULL"
+          },
+          {
+            "fieldPath": "recoverableUntilMillis",
+            "columnName": "recoverableUntilMillis",
+            "affinity": "INTEGER",
+            "defaultValue": "NULL"
+          },
+          {
+            "fieldPath": "recoveredAtMillis",
+            "columnName": "recoveredAtMillis",
+            "affinity": "INTEGER",
+            "defaultValue": "NULL"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "eventId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_activity_events_createdAtMillis",
+            "unique": false,
+            "columnNames": [
+              "createdAtMillis"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_activity_events_createdAtMillis` ON `${TABLE_NAME}` (`createdAtMillis`)"
+          },
+          {
+            "name": "index_activity_events_folderId",
+            "unique": false,
+            "columnNames": [
+              "folderId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_activity_events_folderId` ON `${TABLE_NAME}` (`folderId`)"
+          },
+          {
+            "name": "index_activity_events_recoverableUntilMillis",
+            "unique": false,
+            "columnNames": [
+              "recoverableUntilMillis"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_activity_events_recoverableUntilMillis` ON `${TABLE_NAME}` (`recoverableUntilMillis`)"
+          }
+        ]
+      },
+      {
+        "tableName": "file_versions",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`folderId` TEXT NOT NULL, `relativePath` TEXT NOT NULL, `fileId` TEXT NOT NULL, `sizeBytes` INTEGER NOT NULL, `modifiedAtMillis` INTEGER NOT NULL, `contentSha256` TEXT NOT NULL, `previousContentSha256` TEXT, `deleted` INTEGER NOT NULL, `versionVectorJson` TEXT NOT NULL, `originDeviceId` TEXT NOT NULL, `localSequence` INTEGER NOT NULL, `purgeRecovery` INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(`folderId`, `relativePath`), FOREIGN KEY(`folderId`) REFERENCES `sync_folders`(`folderId`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "folderId",
+            "columnName": "folderId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "relativePath",
+            "columnName": "relativePath",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fileId",
+            "columnName": "fileId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sizeBytes",
+            "columnName": "sizeBytes",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "modifiedAtMillis",
+            "columnName": "modifiedAtMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "contentSha256",
+            "columnName": "contentSha256",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "previousContentSha256",
+            "columnName": "previousContentSha256",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "deleted",
+            "columnName": "deleted",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "versionVectorJson",
+            "columnName": "versionVectorJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "originDeviceId",
+            "columnName": "originDeviceId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "localSequence",
+            "columnName": "localSequence",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "purgeRecovery",
+            "columnName": "purgeRecovery",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "folderId",
+            "relativePath"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_file_versions_fileId",
+            "unique": false,
+            "columnNames": [
+              "fileId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_file_versions_fileId` ON `${TABLE_NAME}` (`fileId`)"
+          },
+          {
+            "name": "index_file_versions_contentSha256",
+            "unique": false,
+            "columnNames": [
+              "contentSha256"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_file_versions_contentSha256` ON `${TABLE_NAME}` (`contentSha256`)"
+          },
+          {
+            "name": "index_file_versions_localSequence",
+            "unique": false,
+            "columnNames": [
+              "localSequence"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_file_versions_localSequence` ON `${TABLE_NAME}` (`localSequence`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "sync_folders",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "folderId"
+            ],
+            "referencedColumns": [
+              "folderId"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "remote_file_versions",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`folderId` TEXT NOT NULL, `deviceId` TEXT NOT NULL, `relativePath` TEXT NOT NULL, `fileId` TEXT NOT NULL, `sizeBytes` INTEGER NOT NULL, `modifiedAtMillis` INTEGER NOT NULL, `contentSha256` TEXT NOT NULL, `previousContentSha256` TEXT, `originDeviceId` TEXT NOT NULL, `deleted` INTEGER NOT NULL, `versionVectorJson` TEXT NOT NULL, `remoteSequence` INTEGER NOT NULL, `purgeRecovery` INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(`folderId`, `deviceId`, `relativePath`), FOREIGN KEY(`folderId`) REFERENCES `sync_folders`(`folderId`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "folderId",
+            "columnName": "folderId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "deviceId",
+            "columnName": "deviceId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "relativePath",
+            "columnName": "relativePath",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fileId",
+            "columnName": "fileId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sizeBytes",
+            "columnName": "sizeBytes",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "modifiedAtMillis",
+            "columnName": "modifiedAtMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "contentSha256",
+            "columnName": "contentSha256",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "previousContentSha256",
+            "columnName": "previousContentSha256",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "originDeviceId",
+            "columnName": "originDeviceId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "deleted",
+            "columnName": "deleted",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "versionVectorJson",
+            "columnName": "versionVectorJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "remoteSequence",
+            "columnName": "remoteSequence",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "purgeRecovery",
+            "columnName": "purgeRecovery",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "folderId",
+            "deviceId",
+            "relativePath"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_remote_file_versions_deviceId",
+            "unique": false,
+            "columnNames": [
+              "deviceId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_remote_file_versions_deviceId` ON `${TABLE_NAME}` (`deviceId`)"
+          },
+          {
+            "name": "index_remote_file_versions_fileId",
+            "unique": false,
+            "columnNames": [
+              "fileId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_remote_file_versions_fileId` ON `${TABLE_NAME}` (`fileId`)"
+          },
+          {
+            "name": "index_remote_file_versions_contentSha256",
+            "unique": false,
+            "columnNames": [
+              "contentSha256"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_remote_file_versions_contentSha256` ON `${TABLE_NAME}` (`contentSha256`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "sync_folders",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "folderId"
+            ],
+            "referencedColumns": [
+              "folderId"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "folder_index_states",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`folderId` TEXT NOT NULL, `deviceId` TEXT NOT NULL, `indexEpoch` INTEGER NOT NULL, `maxSequence` INTEGER NOT NULL, `metadataReceivedSequence` INTEGER NOT NULL, `contentAppliedSequence` INTEGER NOT NULL, `updatedAtMillis` INTEGER NOT NULL, PRIMARY KEY(`folderId`, `deviceId`), FOREIGN KEY(`folderId`) REFERENCES `sync_folders`(`folderId`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "folderId",
+            "columnName": "folderId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "deviceId",
+            "columnName": "deviceId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "indexEpoch",
+            "columnName": "indexEpoch",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "maxSequence",
+            "columnName": "maxSequence",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "metadataReceivedSequence",
+            "columnName": "metadataReceivedSequence",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "contentAppliedSequence",
+            "columnName": "contentAppliedSequence",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAtMillis",
+            "columnName": "updatedAtMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "folderId",
+            "deviceId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_folder_index_states_deviceId",
+            "unique": false,
+            "columnNames": [
+              "deviceId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_folder_index_states_deviceId` ON `${TABLE_NAME}` (`deviceId`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "sync_folders",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "folderId"
+            ],
+            "referencedColumns": [
+              "folderId"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "file_blocks",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`folderId` TEXT NOT NULL, `fileId` TEXT NOT NULL, `contentSha256` TEXT NOT NULL, `blockIndex` INTEGER NOT NULL, `offsetBytes` INTEGER NOT NULL, `sizeBytes` INTEGER NOT NULL, `blockSha256` TEXT NOT NULL, PRIMARY KEY(`folderId`, `fileId`, `contentSha256`, `blockIndex`), FOREIGN KEY(`folderId`) REFERENCES `sync_folders`(`folderId`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "folderId",
+            "columnName": "folderId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fileId",
+            "columnName": "fileId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "contentSha256",
+            "columnName": "contentSha256",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "blockIndex",
+            "columnName": "blockIndex",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "offsetBytes",
+            "columnName": "offsetBytes",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sizeBytes",
+            "columnName": "sizeBytes",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "blockSha256",
+            "columnName": "blockSha256",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "folderId",
+            "fileId",
+            "contentSha256",
+            "blockIndex"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_file_blocks_contentSha256",
+            "unique": false,
+            "columnNames": [
+              "contentSha256"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_file_blocks_contentSha256` ON `${TABLE_NAME}` (`contentSha256`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "sync_folders",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "folderId"
+            ],
+            "referencedColumns": [
+              "folderId"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "partial_transfers",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`folderId` TEXT NOT NULL, `fileId` TEXT NOT NULL, `contentSha256` TEXT NOT NULL, `temporaryPath` TEXT NOT NULL, `totalSizeBytes` INTEGER NOT NULL, `blockSizeBytes` INTEGER NOT NULL, `receivedBlocksBase64` TEXT NOT NULL, `updatedAtMillis` INTEGER NOT NULL, PRIMARY KEY(`folderId`, `fileId`, `contentSha256`), FOREIGN KEY(`folderId`) REFERENCES `sync_folders`(`folderId`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "folderId",
+            "columnName": "folderId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fileId",
+            "columnName": "fileId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "contentSha256",
+            "columnName": "contentSha256",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "temporaryPath",
+            "columnName": "temporaryPath",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "totalSizeBytes",
+            "columnName": "totalSizeBytes",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "blockSizeBytes",
+            "columnName": "blockSizeBytes",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "receivedBlocksBase64",
+            "columnName": "receivedBlocksBase64",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAtMillis",
+            "columnName": "updatedAtMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "folderId",
+            "fileId",
+            "contentSha256"
+          ]
+        },
+        "foreignKeys": [
+          {
+            "table": "sync_folders",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "folderId"
+            ],
+            "referencedColumns": [
+              "folderId"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "sync_exception_events",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`eventId` TEXT NOT NULL, `groupId` TEXT NOT NULL, `folderId` TEXT NOT NULL, `relativePath` TEXT NOT NULL, `active` INTEGER NOT NULL, `signerDeviceId` TEXT NOT NULL, `versionVectorJson` TEXT NOT NULL, `createdAtMillis` INTEGER NOT NULL, `signatureBase64` TEXT NOT NULL, PRIMARY KEY(`eventId`))",
+        "fields": [
+          {
+            "fieldPath": "eventId",
+            "columnName": "eventId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "groupId",
+            "columnName": "groupId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "folderId",
+            "columnName": "folderId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "relativePath",
+            "columnName": "relativePath",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "active",
+            "columnName": "active",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "signerDeviceId",
+            "columnName": "signerDeviceId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "versionVectorJson",
+            "columnName": "versionVectorJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtMillis",
+            "columnName": "createdAtMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "signatureBase64",
+            "columnName": "signatureBase64",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "eventId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_sync_exception_events_groupId",
+            "unique": false,
+            "columnNames": [
+              "groupId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sync_exception_events_groupId` ON `${TABLE_NAME}` (`groupId`)"
+          },
+          {
+            "name": "index_sync_exception_events_folderId",
+            "unique": false,
+            "columnNames": [
+              "folderId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sync_exception_events_folderId` ON `${TABLE_NAME}` (`folderId`)"
+          }
+        ]
+      },
+      {
+        "tableName": "folder_keys",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`folderId` TEXT NOT NULL, `keyId` TEXT NOT NULL, `wrappedKeyBase64` TEXT NOT NULL, `nonceBase64` TEXT NOT NULL, `createdAtMillis` INTEGER NOT NULL, PRIMARY KEY(`folderId`), FOREIGN KEY(`folderId`) REFERENCES `sync_folders`(`folderId`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "folderId",
+            "columnName": "folderId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "keyId",
+            "columnName": "keyId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "wrappedKeyBase64",
+            "columnName": "wrappedKeyBase64",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "nonceBase64",
+            "columnName": "nonceBase64",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtMillis",
+            "columnName": "createdAtMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "folderId"
+          ]
+        },
+        "foreignKeys": [
+          {
+            "table": "sync_folders",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "folderId"
+            ],
+            "referencedColumns": [
+              "folderId"
+            ]
+          }
+        ]
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '2b8653103d16c88d3a4f4af71f730527')"
+    ]
+  }
+}

@@ -67,6 +67,12 @@ SyncDroid-Mesh connects Android, macOS and Windows devices as an equal-peer mesh
 
 Membership is replicated too. When an authorised device adds or removes a mesh member, that signed change reaches the other trusted devices during later synchronization sessions.
 
+## Cloud sync
+
+Already-paired devices can exchange encrypted folder files through Google Drive or OneDrive when they cannot meet on the same Wi-Fi network. Sign into the same cloud account on each device, select the folders to include, and use **Settings → Cloud sync → Sync cloud now** to pull and push changes. Off registered Wi-Fi, cloud sync is manual; automatic checks run only on registered networks.
+
+Cloud sign-in requires the project owner's one-time [provider setup](CLOUD_SETUP.md) before it is available in release builds. Users do not need developer credentials. New cloud uploads use separate storage for each publishing device, and unused versions are retained for 30 days before moving to provider trash. Existing shared cloud objects remain untouched.
+
 ## Offline updates
 
 Online update checks download the installer for the current device from GitHub. For devices without internet access, open **Settings → Advanced update options → Prepare updates for offline devices** on an internet-connected device. This downloads and verifies the Windows, Mac and Android installers so trusted mesh peers can receive their own installer locally. You can also import a signed `.sdu` bundle brought in from another computer.
@@ -104,3 +110,11 @@ The local peer mesh, file transfer engine, resumable blocks, history, recovery, 
 SyncDroid-Mesh, SyncTosh, SyncDows and the shared protocol/synchronization code are licensed under the [GNU General Public License version 3](LICENSE). Distributed modifications must remain under GPLv3 and include the corresponding source.
 
 The application names, logos and icons remain reserved project branding. Forks and independently distributed builds must follow the [trademark policy](TRADEMARKS.md). Third-party components retain their respective licences.
+
+### Delete a file across the mesh
+
+On Windows or Mac, expand a folder and choose **Delete from all devices**, select the files, then confirm. On Android, select files in the folder contents and choose **Delete from all devices** in the removal dialog. This explicit action also works when the originating folder uses Overwrite only.
+
+The deletion is saved for other configured devices to receive on their next mesh or cloud sync. Off registered Wi-Fi, use **Sync cloud now** to publish or receive it. Independently edited copies become conflicts; they are not silently erased. Deletion recovery copies are retained for 30 days in File history. Cloud storage can retain encrypted obsolete objects until its cleanup grace period expires.
+
+In Android folder contents, **hold the bin icon** to open **Permanently delete from all devices**. Confirming removes the selected working files and SyncDroid recovery copies on participating devices as they sync, without creating new recovery copies. Regular taps retain the recoverable deletion choices. All devices must support this version of the sync message; older apps reject it. Provider-managed cloud backups/trash and independently edited conflicting copies are not silently erased.

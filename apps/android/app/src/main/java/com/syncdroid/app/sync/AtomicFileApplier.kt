@@ -61,7 +61,11 @@ class AtomicFileApplier(
 
     override fun delete(relativePath: String) {
         val target = safeTarget(relativePath)
-        if (target.exists()) require(target.isFile && target.delete()) { "Could not delete synced file" }
+        if (target.exists()) {
+            require(target.isFile)
+            expectedContent?.verify(target.inputStream().use(FileHasher::sha256))
+            require(target.delete()) { "Could not delete synced file" }
+        }
     }
 
     private fun safeTarget(relativePath: String): File {

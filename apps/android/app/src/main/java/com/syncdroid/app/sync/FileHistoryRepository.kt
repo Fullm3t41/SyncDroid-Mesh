@@ -1,5 +1,6 @@
 package com.syncdroid.app.sync
 
+import androidx.room.withTransaction
 import android.content.Context
 import android.net.Uri
 import com.syncdroid.app.data.ActivityEventEntity
@@ -58,10 +59,42 @@ class FileHistoryRepository(
             throw error
         }
 
-        val applier = fileApplier(binding)
         prepared.forEach { archived ->
+            val applier = fileApplier(binding, com.syncdroid.shared.sync.ExpectedFileContent(requireNotNull(archived.event.contentSha256)))
             applier.delete(requireNotNull(archived.event.relativePath))
             if (archived.newlyCreated) activityDao.insert(archived.event)
+        }
+    }
+
+    suspend fun deleteFromAllDevices(binding: LocalFolderBindingEntity, paths: List<String>, permanent: Boolean = false) {
+        require(paths.isNotEmpty()) { "Select a file" }
+        for (path in paths.distinct()) {
+            database.withTransaction {
+                val version = requireNotNull(syncDao.fileVersion(binding.folderId, path)) { "Sync this file before deleting it" }
+                if (version.deleted) return@withTransaction
+                val state = requireNotNull(syncDao.folderIndexState(binding.folderId, localDeviceId))
+                val now = System.currentTimeMillis()
+                if (permanent) {
+                    fileApplier(binding, com.syncdroid.shared.sync.ExpectedFileContent(version.contentSha256)).delete(path)
+                    purgeRecoveries(binding.folderId, path)
+                } else deleteWithRecovery(binding, listOf(version), localDeviceId, now)
+                val sequence = state.maxSequence + 1
+                syncDao.upsertFileVersion(version.copy(sizeBytes = 0, modifiedAtMillis = now,
+                    contentSha256 = "", previousContentSha256 = version.contentSha256, deleted = true,
+                    versionVectorJson = VersionVector.fromJson(version.versionVectorJson).increment(localDeviceId).toJson(),
+                    originDeviceId = localDeviceId, localSequence = sequence, purgeRecovery = permanent))
+                syncDao.upsertFolderIndexState(state.copy(maxSequence = sequence, metadataReceivedSequence = sequence,
+                    contentAppliedSequence = sequence, updatedAtMillis = now))
+            }
+        }
+    }
+
+    suspend fun purgeRecoveries(folderId: String, relativePath: String) {
+        activityDao.recoveriesForFile(folderId, relativePath).forEach { event ->
+            val file = File(requireNotNull(event.recoveryPath))
+            require(isInsideRecoveryRoot(file)) { "Invalid recovery location" }
+            require(!file.exists() || file.delete()) { "Could not remove recovery copy" }
+            activityDao.clearRecoveryPath(event.eventId)
         }
     }
 
@@ -196,12 +229,12 @@ class FileHistoryRepository(
         }
     }
 
-    private fun fileApplier(binding: LocalFolderBindingEntity): SyncFileApplier {
+    private fun fileApplier(binding: LocalFolderBindingEntity, expected: com.syncdroid.shared.sync.ExpectedFileContent? = null): SyncFileApplier {
         val location = requireNotNull(binding.localLocation)
         return if (location.startsWith("content://", true)) {
-            DocumentTreeFileApplier(appContext, Uri.parse(location))
+            DocumentTreeFileApplier(appContext, Uri.parse(location), expected)
         } else {
-            AtomicFileApplier(File(location))
+            AtomicFileApplier(File(location), expected)
         }
     }
 

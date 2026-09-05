@@ -40,6 +40,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.isActive
 
 class SyncForegroundService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -54,6 +55,7 @@ class SyncForegroundService : Service() {
     private var runtime: MeshRuntime? = null
     private var runtimeKey: RuntimeKey? = null
     private var reconcileJob: Job? = null
+    private var cloudJob: Job? = null
     private var reconcilePending = false
     private var pendingReconcileForce = false
     private val activePeers = linkedMapOf<String, String>()
@@ -87,6 +89,13 @@ class SyncForegroundService : Service() {
             SyncServiceController.appInForeground.collect {
                 publishNotification()
                 reconcile(force = false)
+            }
+        }
+        serviceScope.launch {
+            while (kotlinx.coroutines.currentCoroutineContext().isActive) {
+                val policy = DiscoveryPolicyStore(this@SyncForegroundService).load()
+                if (SyncServiceController.appInForeground.value || !policy.scheduledDiscoveryEnabled) launchCloudSync(manual = false)
+                kotlinx.coroutines.delay(60_000)
             }
         }
         wifiMonitor = WifiConnectionMonitor(applicationContext)
@@ -125,6 +134,7 @@ class SyncForegroundService : Service() {
             ACTION_PROPAGATE_CHAT -> {
                 if (runtime?.propagateLocalChatChange() != true) reconcile(force = true)
             }
+            ACTION_CLOUD_SYNC -> launchCloudSync(manual = true)
             ACTION_REFRESH -> reconcile(force = true)
             else -> reconcile(force = false)
         }
@@ -147,6 +157,45 @@ class SyncForegroundService : Service() {
             peerSyncProgress = emptyMap(),
         )
         super.onDestroy()
+    }
+
+    private fun launchCloudSync(manual: Boolean) {
+        if (cloudJob?.isActive == true) return
+        val policy = com.syncdroid.app.cloud.CloudSyncPolicyStore(this).load()
+        val accounts = com.syncdroid.app.cloud.AndroidCloudAccounts.get(this)
+        if (policy.scope == com.syncdroid.app.cloud.CloudSyncScope.DISABLED) return
+        val providers = com.syncdroid.shared.cloud.CloudProvider.entries.filter(accounts::connected)
+        if (providers.isEmpty()) return
+        fun networkAllowed() = WifiSyncPolicyStore(this).load().allowsSync(wifiConnection.isWifiConnected, wifiConnection.ssid)
+        if (!manual && !networkAllowed()) return
+        cloudJob = serviceScope.launch(Dispatchers.IO) {
+            com.syncdroid.app.cloud.AndroidCloudStatus.update(true, "Waiting for active file syncs…")
+            try {
+                com.syncdroid.app.cloud.CloudTransferGate.cloud {
+                    if (!manual && !networkAllowed()) return@cloud
+                    val profile = LocalMeshProfileStore(this@SyncForegroundService).getOrCreate()
+                    val session = com.syncdroid.app.mesh.MeshSyncSession(this@SyncForegroundService, database, identity, profile.groupId, profile.groupName)
+                    var result = com.syncdroid.shared.cloud.CloudTransferResult()
+                    val folders = database.syncDao().configuredBindings(identity.deviceId, profile.groupId)
+                        .map { it.folderId }.filter(policy::isEnabledFor)
+                    for (provider in providers) {
+                        val remote = com.syncdroid.app.cloud.AndroidCloudRemoteStore(provider) { accounts.accessToken(provider) }
+                        for (folderId in folders) {
+                            com.syncdroid.app.cloud.AndroidCloudStatus.update(true, "${provider.displayName} · syncing files…")
+                            result += session.syncCloudFolder(remote, folderId)
+                        }
+                    }
+                    com.syncdroid.app.cloud.AndroidCloudStatus.update(false,
+                        "Cloud sync finished · ${result.uploadedFiles} up, ${result.downloadedFiles} down, ${result.conflicts} conflicts")
+                }
+            } catch (error: Exception) {
+                com.syncdroid.app.cloud.AndroidCloudStatus.update(false, error.message ?: "Cloud sync failed; retry to continue")
+                if (error is CancellationException) throw error
+            } finally {
+                val status = com.syncdroid.app.cloud.AndroidCloudStatus.state.value
+                com.syncdroid.app.cloud.AndroidCloudStatus.update(false, status.message)
+            }
+        }
     }
 
     private fun reconcile(force: Boolean) {
@@ -288,11 +337,11 @@ class SyncForegroundService : Service() {
                 "Waiting for nearby devices",
                 "Next discovery at ${formatTime(event.nextWindowAtMillis)}",
             )
-            is MeshRuntimeEvent.DiscoveryActive -> setStatus(
-                "Looking for mesh devices",
-                event.windowEndsAtMillis?.let { "Discovery active until ${formatTime(it)}" }
-                    ?: "Discovery stays active while SyncDroid-Mesh is open",
-            )
+            is MeshRuntimeEvent.DiscoveryActive -> {
+                setStatus("Looking for mesh devices", event.windowEndsAtMillis?.let { "Discovery active until ${formatTime(it)}" }
+                    ?: "Discovery stays active while SyncDroid-Mesh is open")
+                launchCloudSync(manual = false)
+            }
             is MeshRuntimeEvent.PresenceChanged -> SyncServiceController.report(
                 onlinePeerIds = event.peerIds,
             )
@@ -469,6 +518,7 @@ class SyncForegroundService : Service() {
     )
 
     companion object {
+        const val ACTION_CLOUD_SYNC = "com.syncdroid.app.action.CLOUD_SYNC"
         const val ACTION_REFRESH = "com.syncdroid.app.action.REFRESH_BACKGROUND_SYNC"
         const val ACTION_PROPAGATE_MEMBERSHIP = "com.syncdroid.app.action.PROPAGATE_MEMBERSHIP"
         const val ACTION_PROPAGATE_CHAT = "com.syncdroid.app.action.PROPAGATE_CHAT"

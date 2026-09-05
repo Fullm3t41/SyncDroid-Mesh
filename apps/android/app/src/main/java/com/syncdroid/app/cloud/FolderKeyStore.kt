@@ -1,5 +1,9 @@
 package com.syncdroid.app.cloud
 
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import org.json.JSONArray
+import org.json.JSONObject
 import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
@@ -23,37 +27,47 @@ class AndroidFolderKeyStore(
     private val appContext = context.applicationContext
     private val keyStore = KeyStore.getInstance(ANDROID_KEY_STORE).apply { load(null) }
 
-    suspend fun getOrCreate(folderId: String): FolderKeyMaterial {
-        syncDao.folderKey(folderId)?.let { return unwrap(it) }
-        val material = FolderKeyMaterial(folderId, UUID.randomUUID().toString(), randomKey())
-        persist(material)
-        return material
+    private val history = appContext.getSharedPreferences("cloud-key-history", Context.MODE_PRIVATE)
+
+    suspend fun getOrCreate(folderId: String): FolderKeyMaterial = keyMutex.withLock {
+        syncDao.folderKey(folderId)?.let { return@withLock unwrap(it) }
+        FolderKeyMaterial(folderId, UUID.randomUUID().toString(), randomKey()).also { syncDao.upsertFolderKey(wrap(it)) }
     }
 
-    suspend fun import(folderId: String, keyId: String, rawKey: ByteArray): FolderKeyMaterial {
-        require(rawKey.size == FOLDER_KEY_BYTES) { "Folder keys must be 256 bits" }
-        syncDao.folderKey(folderId)?.let { existing ->
-            require(existing.keyId == keyId) { "A different key already protects this folder" }
-            return unwrap(existing)
+    suspend fun all(folderId: String): List<FolderKeyMaterial> = keyMutex.withLock {
+        (listOfNotNull(syncDao.folderKey(folderId)) + archived(folderId)).distinctBy { it.keyId }.map(::unwrap)
+    }
+
+    suspend fun import(folderId: String, keyId: String, rawKey: ByteArray): FolderKeyMaterial = keyMutex.withLock {
+        require(rawKey.size == FOLDER_KEY_BYTES && keyId.isNotBlank()) { "Invalid folder key" }
+        val known = (listOfNotNull(syncDao.folderKey(folderId)) + archived(folderId)).distinctBy { it.keyId }
+        known.firstOrNull { it.keyId == keyId }?.let {
+            require(unwrap(it).bytes.contentEquals(rawKey)) { "Cloud key material does not match its ID" }
         }
-        return FolderKeyMaterial(folderId, keyId, rawKey.copyOf()).also { persist(it) }
+        val entries = (known + wrap(FolderKeyMaterial(folderId, keyId, rawKey.copyOf()))).distinctBy { it.keyId }
+        val json = JSONArray(entries.map { JSONObject()
+            .put("id", it.keyId).put("key", it.wrappedKeyBase64).put("nonce", it.nonceBase64)
+            .put("created", it.createdAtMillis) })
+        check(history.edit().putString(folderId, json.toString()).commit()) { "Could not preserve existing cloud keys" }
+        entries.minBy { it.keyId }.also { syncDao.upsertFolderKey(it) }.let(::unwrap)
     }
 
-    private suspend fun persist(material: FolderKeyMaterial) {
+    private fun archived(folderId: String): List<FolderKeyEntity> {
+        val json = JSONArray(history.getString(folderId, "[]"))
+        return List(json.length()) { index -> json.getJSONObject(index).let {
+            FolderKeyEntity(folderId, it.getString("id"), it.getString("key"), it.getString("nonce"), it.getLong("created"))
+        } }
+    }
+
+    private fun wrap(material: FolderKeyMaterial): FolderKeyEntity {
         val nonce = ByteArray(GCM_NONCE_BYTES).also(SecureRandom()::nextBytes)
         val cipher = Cipher.getInstance(TRANSFORMATION).apply {
             init(Cipher.ENCRYPT_MODE, masterKey(), GCMParameterSpec(GCM_TAG_BITS, nonce))
             updateAAD(material.folderId.toByteArray())
         }
-        syncDao.upsertFolderKey(
-            FolderKeyEntity(
-                material.folderId,
-                material.keyId,
-                Base64.getEncoder().encodeToString(cipher.doFinal(material.bytes)),
-                Base64.getEncoder().encodeToString(nonce),
-                System.currentTimeMillis(),
-            ),
-        )
+        return FolderKeyEntity(material.folderId, material.keyId,
+            Base64.getEncoder().encodeToString(cipher.doFinal(material.bytes)),
+            Base64.getEncoder().encodeToString(nonce), System.currentTimeMillis())
     }
 
     private fun unwrap(entity: FolderKeyEntity): FolderKeyMaterial {
@@ -90,6 +104,7 @@ class AndroidFolderKeyStore(
     private fun randomKey(): ByteArray = ByteArray(FOLDER_KEY_BYTES).also(SecureRandom()::nextBytes)
 
     private companion object {
+        val keyMutex = Mutex()
         const val ANDROID_KEY_STORE = "AndroidKeyStore"
         const val MASTER_ALIAS = "syncdroid-folder-key-master-v1"
         const val TRANSFORMATION = "AES/GCM/NoPadding"

@@ -52,6 +52,7 @@ data class CloudFolderManifest(
     val publisherDeviceId: String,
     val publishedAtMillis: Long,
     val index: FolderIndexUpdate,
+    val publisherScopedFiles: Boolean = false,
 )
 
 object CloudEncryptedObjects {
@@ -64,16 +65,23 @@ object CloudEncryptedObjects {
     fun fileName(key: FolderKeyMaterial, fileId: String, contentSha256: String): String =
         opaqueName(key, "file\u0000$fileId\u0000$contentSha256") + ENCRYPTED_SUFFIX
 
+    fun publisherFilePrefix(key: FolderKeyMaterial, publisherDeviceId: String): String =
+        "file-" + opaqueName(key, "publisher\u0000$publisherDeviceId") + "-"
+
+    fun publisherFileName(key: FolderKeyMaterial, publisherDeviceId: String, fileId: String, hash: String): String =
+        publisherFilePrefix(key, publisherDeviceId) + fileName(key, fileId, hash)
+
     fun encryptManifest(key: FolderKeyMaterial, manifest: CloudFolderManifest): ByteArray {
         require(manifest.folderId == key.folderId && manifest.index.folderId == key.folderId)
         val plaintext = ByteArrayOutputStream().use { bytes ->
             DataOutputStream(bytes).use { output ->
                 output.writeInt(MANIFEST_MAGIC)
-                output.writeInt(MANIFEST_VERSION)
+                output.writeInt(if (manifest.publisherScopedFiles) 3 else MANIFEST_VERSION)
                 output.writeString(manifest.folderId)
                 output.writeString(manifest.folderName)
                 output.writeString(manifest.publisherDeviceId)
                 output.writeLong(manifest.publishedAtMillis)
+                if (manifest.publisherScopedFiles) output.writeBoolean(true)
                 output.writeData(MeshSessionWireCodec.encode(MeshSessionMessage.IndexBatch(listOf(manifest.index))))
             }
             bytes.toByteArray()
@@ -84,17 +92,20 @@ object CloudEncryptedObjects {
     fun decryptManifest(key: FolderKeyMaterial, publisherDeviceId: String, encrypted: ByteArray): CloudFolderManifest {
         val plaintext = decryptBytes(key, "manifest\u0000$publisherDeviceId", encrypted)
         return DataInputStream(ByteArrayInputStream(plaintext)).use { input ->
-            require(input.readInt() == MANIFEST_MAGIC && input.readInt() == MANIFEST_VERSION) { "Invalid cloud manifest" }
+            require(input.readInt() == MANIFEST_MAGIC) { "Invalid cloud manifest" }
+            val format = input.readInt()
+            require(format in MANIFEST_VERSION..3) { "Unsupported cloud manifest" }
             val folderId = input.readString()
             val folderName = input.readString()
             val publisher = input.readString()
             val published = input.readLong()
+            val scoped = format >= 3 && input.readBoolean()
             require(folderId == key.folderId && publisher == publisherDeviceId) { "Cloud manifest identity mismatch" }
             val message = MeshSessionWireCodec.decode(input.readData()) as? MeshSessionMessage.IndexBatch
                 ?: error("Cloud manifest does not contain a folder index")
             require(message.updates.size == 1 && message.updates.single().folderId == folderId)
             require(input.available() == 0)
-            CloudFolderManifest(folderId, folderName, publisher, published, message.updates.single())
+            CloudFolderManifest(folderId, folderName, publisher, published, message.updates.single(), scoped)
         }
     }
 
@@ -123,8 +134,9 @@ object CloudEncryptedObjects {
         destination: Path,
     ) {
         Files.newInputStream(source).buffered().use { input ->
-            require(input.readNBytes(FILE_MAGIC.size).contentEquals(FILE_MAGIC)) { "Invalid encrypted cloud file" }
-            val nonce = input.readNBytes(NONCE_BYTES).also { require(it.size == NONCE_BYTES) }
+            val header = java.io.DataInputStream(input)
+            require(ByteArray(FILE_MAGIC.size).also(header::readFully).contentEquals(FILE_MAGIC)) { "Invalid encrypted cloud file" }
+            val nonce = ByteArray(NONCE_BYTES).also(header::readFully)
             val cipher = fileCipher(Cipher.DECRYPT_MODE, key, fileId, contentSha256, nonce)
             javax.crypto.CipherInputStream(input, cipher).use { decrypted ->
                 Files.newOutputStream(destination).buffered().use(decrypted::copyTo)
