@@ -233,6 +233,7 @@ fun SyncDroidApp(openFoldersRequest: Int = 0) {
     val themePreferenceStore = remember(context) { ThemePreferenceStore(context) }
     val updateService = remember(context) { AndroidUpdateProvider.get(context) }
     val updateState by updateService.state.collectAsState()
+    val offlineSeedState by updateService.seedState.collectAsState()
     var offlineBundleOperationInProgress by remember { mutableStateOf(false) }
     var darkTheme by rememberSaveable {
         mutableStateOf(themePreferenceStore.load(systemDarkTheme))
@@ -1113,6 +1114,7 @@ fun SyncDroidApp(openFoldersRequest: Int = 0) {
                     )
                     MainTab.Settings -> SettingsScreen(
                         updateState = updateState,
+                        offlineSeedState = offlineSeedState,
                         onUpdateAction = {
                             when (val current = updateState) {
                                 is UpdateState.Available -> scope.launch { updateService.downloadUpdate() }
@@ -2782,6 +2784,7 @@ private fun formatHistoryDate(timestamp: Long): String =
 @Composable
 private fun SettingsScreen(
     updateState: UpdateState,
+    offlineSeedState: com.syncdroid.shared.update.OfflineSeedState,
     onUpdateAction: () -> Unit,
     onImportUpdateBundle: () -> Unit,
     onDownloadUpdateBundle: () -> Unit,
@@ -2801,7 +2804,6 @@ private fun SettingsScreen(
     var offlineUpdateImportUnlocked by remember {
         mutableStateOf(advancedSettings.getBoolean("offline_update_import_unlocked", false))
     }
-    var aboutTapCount by remember { mutableIntStateOf(0) }
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(horizontal = 20.dp, vertical = 22.dp),
@@ -2857,30 +2859,32 @@ private fun SettingsScreen(
                     title = "About SyncDroid-Mesh",
                     detail = "Created by Fullm3t41 · version ${BuildConfig.VERSION_NAME} · GNU GPLv3",
                     showChevron = false,
-                    onClick = {
-                        if (!offlineUpdateImportUnlocked) {
-                            aboutTapCount++
-                            if (aboutTapCount >= 10) {
-                                offlineUpdateImportUnlocked = true
-                                advancedSettings.edit().putBoolean("offline_update_import_unlocked", true).apply()
-                            }
-                        }
-                    },
+                    onClick = {},
                 )
             }
         }
         item { UpdateCard(updateState, onUpdateAction) }
+        item {
+            SettingsCard {
+                SettingsActionRow(
+                    icon = Icons.Rounded.Settings,
+                    title = "Advanced update options",
+                    detail = "Prepare and import updates for offline devices",
+                    onClick = {
+                        offlineUpdateImportUnlocked = !offlineUpdateImportUnlocked
+                        advancedSettings.edit().putBoolean("offline_update_import_unlocked", offlineUpdateImportUnlocked).apply()
+                    },
+                )
+            }
+        }
         if (offlineUpdateImportUnlocked) {
             item {
                 SettingsCard {
                     SettingsActionRow(
                         icon = Icons.Rounded.Cloud,
-                        title = "Download offline bundle",
-                        detail = if (offlineBundleBusy) {
-                            "Downloading and verifying the latest GitHub release…"
-                        } else {
-                            "Download the latest signed release and seed every platform"
-                        },
+                        title = "Prepare updates for offline devices",
+                        detail = offlineSeedState.description,
+                        enabled = !offlineBundleBusy && !offlineSeedState.preparing,
                         onClick = onDownloadUpdateBundle,
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f))
@@ -2889,6 +2893,7 @@ private fun SettingsScreen(
                         title = "Import offline update bundle",
                         detail = "Choose a signed .sdu file; verified outdated bundles are deleted",
                         onClick = onImportUpdateBundle,
+                        enabled = !offlineBundleBusy && !offlineSeedState.preparing,
                     )
                 }
             }
@@ -3357,11 +3362,12 @@ private fun SettingsActionRow(
     detail: String,
     onClick: () -> Unit,
     showChevron: Boolean = true,
+    enabled: Boolean = true,
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .clickable(enabled = enabled, onClick = onClick)
             .padding(16.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

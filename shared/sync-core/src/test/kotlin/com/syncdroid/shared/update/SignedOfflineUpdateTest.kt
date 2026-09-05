@@ -21,6 +21,99 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class SignedOfflineUpdateTest {
+    @Test fun newerOnlineManifestDoesNotDisplaceCompleteSeedAcrossRestart() = runBlocking {
+        val keys = KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()
+        val publicKey = Base64.getEncoder().encodeToString(keys.public.encoded)
+        val root = Files.createTempDirectory("retained-offline-seed")
+        val server = com.sun.net.httpserver.HttpServer.create(java.net.InetSocketAddress("127.0.0.1", 0), 0)
+        try {
+            val old = signedBundle(root, "1.2.1", keys)
+            val newer = signedBundle(root, "1.2.2", keys)
+            java.util.zip.ZipFile(newer.toFile()).use { zip ->
+                for ((endpoint, entry) in listOf("/manifest" to "syncdroid-update.properties", "/manifest.sig" to RELEASE_SIGNATURE_FILE)) {
+                    val bytes = zip.getInputStream(zip.getEntry(entry)).use { it.readBytes() }
+                    server.createContext(endpoint) { request ->
+                        request.sendResponseHeaders(200, bytes.size.toLong())
+                        request.responseBody.use { it.write(bytes) }
+                    }
+                }
+            }
+            server.start()
+            val cache = root.resolve("cache")
+            val url = "http://127.0.0.1:${server.address.port}/manifest"
+            val seed = service(cache, UpdatePlatform.WindowsX64, publicKey, manifestUrl = url)
+            seed.importOfflineBundle(old)
+            seed.checkForUpdate()
+            assertEquals("1.2.2", assertIs<UpdateState.Available>(seed.state.value).manifest.version)
+            assertEquals(setOf("1.2.1"), seed.availableAssets().map { it.releaseVersion }.toSet())
+            val restarted = service(cache, UpdatePlatform.WindowsX64, publicKey, manifestUrl = url)
+            assertEquals("1.2.1", restarted.seedState.value.version)
+            val offlinePeer = service(root.resolve("peer"), UpdatePlatform.Android, publicKey)
+            val toPeer = Channel<MeshSessionMessage>(Channel.UNLIMITED)
+            val toSeed = Channel<MeshSessionMessage>(Channel.UNLIMITED)
+            val sending = async { MeshUpdateExchange(restarted).run("b", "a", toPeer::send, toSeed::receive) }
+            val receiving = async { MeshUpdateExchange(offlinePeer).run("a", "b", toSeed::send, toPeer::receive) }
+            sending.await(); receiving.await()
+            assertEquals("1.2.1", assertIs<UpdateState.Ready>(offlinePeer.state.value).manifest.version)
+            restarted.importOfflineBundle(newer)
+            assertEquals("1.2.2", restarted.seedState.value.version)
+            assertEquals(setOf("1.2.2"), restarted.availableAssets().map { it.releaseVersion }.toSet())
+        } finally { server.stop(0); root.toFile().deleteRecursively() }
+    }
+
+    @Test fun failedPreparationKeepsSeedAndReportsFailure() = runBlocking {
+        val keys = KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()
+        val publicKey = Base64.getEncoder().encodeToString(keys.public.encoded)
+        val root = Files.createTempDirectory("failed-seed-refresh")
+        try {
+            val seed = service(root.resolve("cache"), UpdatePlatform.Android, publicKey)
+            seed.importOfflineBundle(signedBundle(root, "1.2.1", keys))
+            val newer = signedBundle(root, "1.2.2", keys)
+            val entries = java.util.zip.ZipFile(newer.toFile()).use { zip ->
+                zip.entries().asSequence().map { it.name to zip.getInputStream(it).use { input -> input.readBytes() } }.toList()
+            }
+            ZipOutputStream(Files.newOutputStream(newer)).use { zip ->
+                entries.forEach { (name, bytes) ->
+                    zip.putNextEntry(ZipEntry(name))
+                    zip.write(if (name.endsWith(".exe")) byteArrayOf(99) else bytes)
+                    zip.closeEntry()
+                }
+            }
+            assertFailsWith<IllegalStateException> { seed.importOfflineBundle(newer) }
+            assertEquals("1.2.1", seed.seedState.value.version)
+            assertFalse(seed.seedState.value.preparing)
+            assertTrue(seed.seedState.value.error != null)
+            assertEquals(setOf("1.2.1"), seed.availableAssets().map { it.releaseVersion }.toSet())
+        } finally { root.toFile().deleteRecursively() }
+    }
+
+    @Test fun cleanupRetainsInFlightSeedAndTwoRecentReleases() = runBlocking {
+        val keys = KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()
+        val publicKey = Base64.getEncoder().encodeToString(keys.public.encoded)
+        val root = Files.createTempDirectory("seed-cache-retention")
+        try {
+            val cache = root.resolve("cache")
+            val seed = service(cache, UpdatePlatform.Android, publicKey)
+            val original = signedBundle(root, "1.2.1", keys)
+            seed.importOfflineBundle(original)
+            val inFlight = seed.openExchange()
+            try {
+                val asset = inFlight.availableAssets().first { it.platformId == UpdatePlatform.Android.id }
+                seed.importOfflineBundle(signedBundle(root, "1.2.2", keys))
+                seed.importOfflineBundle(signedBundle(root, "1.2.3", keys))
+                assertTrue(Files.isDirectory(cache.resolve("1.2.1")))
+                assertContentEquals(byteArrayOf(1), inFlight.readChunk(asset.sha256, 0, 1))
+                assertEquals(setOf("1.2.1"), inFlight.availableAssets().map { it.releaseVersion }.toSet())
+            } finally { inFlight.closeExchange() }
+            assertFalse(Files.exists(cache.resolve("1.2.1")))
+            assertTrue(Files.isDirectory(cache.resolve("1.2.2")))
+            assertTrue(Files.isDirectory(cache.resolve("1.2.3")))
+            assertTrue(Files.exists(original))
+            assertEquals("1.2.3", service(cache, UpdatePlatform.Android, publicKey).seedState.value.version)
+        } finally { root.toFile().deleteRecursively() }
+    }
+
+
     @Test
     fun importedBundleSeedsManifestAndPlatformAssetWithoutGitHub() = runBlocking {
         val keyPair = KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()
@@ -141,13 +234,14 @@ class SignedOfflineUpdateTest {
         platform: UpdatePlatform,
         publicKey: String,
         currentVersion: String = "0.2.0",
+        manifestUrl: String = "https://127.0.0.1/unavailable",
     ) = ReleaseUpdateService(
         currentVersion = currentVersion,
         platform = platform,
         cacheDirectory = directory,
         lastCheck = { 0L },
         lastCheckStore = LastUpdateCheckStore {},
-        manifestUrl = "https://127.0.0.1/unavailable",
+        manifestUrl = manifestUrl,
         trustedPublicKeyBase64 = publicKey,
     )
 

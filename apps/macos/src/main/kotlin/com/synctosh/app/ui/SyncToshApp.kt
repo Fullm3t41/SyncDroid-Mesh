@@ -66,6 +66,7 @@ fun SyncToshApp(
 ) {
     val meshState by runtime.state.collectAsState()
     val updateState by updateService.state.collectAsState()
+    val offlineSeedState by updateService.seedState.collectAsState()
     val scope = rememberCoroutineScope()
     var selectedSection by remember { mutableStateOf(preferences.selectedSection) }
     var themeMode by remember { mutableStateOf(preferences.themeMode) }
@@ -270,6 +271,7 @@ fun SyncToshApp(
                             )
                             MainSection.Settings -> SettingsScreen(
                                 updateState = updateState,
+                                offlineSeedState = offlineSeedState,
                                 onUpdateAction = {
                                     when (val current = updateState) {
                                         is UpdateState.Available -> scope.launch { updateService.downloadUpdate() }

@@ -6,6 +6,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
+import kotlin.test.assertFailsWith
+import kotlin.test.assertEquals
 import kotlin.test.assertContentEquals
 
 class MeshUpdateExchangeTest {
@@ -43,6 +45,29 @@ class MeshUpdateExchangeTest {
         targetJob.await()
 
         assertContentEquals(byteArrayOf(1, 2, 3, 4, 5), target.bytes)
+    }
+
+    @Test
+    fun failedAndCancelledExchangesReleaseTheirCacheSnapshot() = runBlocking {
+        val descriptor = UpdateAssetDescriptor("0.2.0", "android", "update.apk", "b".repeat(64), 1)
+        val backing = FakeCache(descriptor, byteArrayOf(1), wantsAsset = false)
+        for (failure in listOf(IllegalStateException("Disconnected"), kotlinx.coroutines.CancellationException("Stopped"))) {
+            var opened = 0
+            var closed = 0
+            val cache = object : MeshUpdateCache by backing {
+                override fun openExchange(): MeshUpdateCache {
+                    opened++
+                    return object : MeshUpdateCache by backing {
+                        override fun closeExchange() { closed++ }
+                    }
+                }
+            }
+            assertFailsWith<Exception> {
+                MeshUpdateExchange(cache).run("a", "b", send = {}, receive = { throw failure })
+            }.also { assertEquals(failure, it) }
+            assertEquals(1, opened)
+            assertEquals(1, closed)
+        }
     }
 
     private class FakeCache(

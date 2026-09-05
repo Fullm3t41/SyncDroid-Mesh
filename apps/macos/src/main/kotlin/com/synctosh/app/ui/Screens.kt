@@ -24,6 +24,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.Add
@@ -945,6 +946,7 @@ fun SettingsScreen(
     onDownloadUpdateBundle: () -> Unit,
     offlineUpdateImportUnlocked: Boolean,
     onOfflineUpdateImportUnlocked: () -> Unit,
+    offlineSeedState: com.syncdroid.shared.update.OfflineSeedState = com.syncdroid.shared.update.OfflineSeedState(),
     themeMode: ThemeMode,
     onThemeModeChanged: (ThemeMode) -> Unit,
     onOpenPowerSettings: () -> Unit,
@@ -955,7 +957,7 @@ fun SettingsScreen(
     noBackgroundService: Boolean,
     onOpenBackgroundSettings: () -> Unit,
 ) {
-    var aboutTapCount by remember { mutableIntStateOf(0) }
+    var showOfflineOptions by remember { mutableStateOf(offlineUpdateImportUnlocked) }
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wide = maxWidth >= WIDE_SCREEN_BREAKPOINT
         LazyColumn(
@@ -1034,21 +1036,28 @@ fun SettingsScreen(
                                 icon = Icons.Rounded.Info,
                                 title = "About SyncTosh",
                                 detail = "Created by Fullm3t41 · version ${updateState.currentVersion} · GNU GPLv3",
-                                onClick = {
-                                    if (!offlineUpdateImportUnlocked) {
-                                        aboutTapCount++
-                                        if (aboutTapCount >= 10) onOfflineUpdateImportUnlocked()
-                                    }
-                                },
+                                onClick = {},
                             )
                         }
                         UpdateCard(updateState, "SyncTosh", onUpdateAction)
-                        if (offlineUpdateImportUnlocked) {
+                        SettingsCard {
+                            SettingsActionRow(
+                                icon = Icons.Rounded.Settings,
+                                title = "Advanced update options",
+                                detail = "Prepare and import updates for offline devices",
+                                onClick = {
+                                    showOfflineOptions = !showOfflineOptions
+                                    if (showOfflineOptions) onOfflineUpdateImportUnlocked()
+                                },
+                            )
+                        }
+                        if (showOfflineOptions) {
                             SettingsCard {
                                 SettingsActionRow(
                                     icon = Icons.Rounded.CloudDownload,
-                                    title = "Download offline bundle",
-                                    detail = "Download the latest signed GitHub release and seed every platform",
+                                    title = "Prepare updates for offline devices",
+                                    detail = offlineSeedState.description,
+                                    enabled = !offlineSeedState.preparing,
                                     onClick = onDownloadUpdateBundle,
                                 )
                                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -1057,6 +1066,7 @@ fun SettingsScreen(
                                     title = "Import offline update bundle",
                                     detail = "Choose a signed .sdu file; verified outdated bundles are deleted",
                                     onClick = onImportUpdateBundle,
+                                    enabled = !offlineSeedState.preparing,
                                 )
                             }
                         }

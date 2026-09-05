@@ -89,7 +89,20 @@ class OutdatedOfflineBundleException(
         if (sourceDeleted) " and was deleted." else ".",
 )
 
+data class OfflineSeedState(val version: String? = null, val preparing: Boolean = false, val error: String? = null) {
+    val description: String get() = when {
+        preparing -> "Downloading and verifying installers for all platforms…"
+        error != null && version != null -> "Preparation failed · version $version is still ready to share"
+        error != null -> "Preparation failed · select to retry"
+        version != null -> "Version $version ready to share · select to prepare the latest release"
+        else -> "Download Windows, Mac and Android installers for offline devices on your mesh"
+    }
+}
+
 interface MeshUpdateCache {
+    /** Pin the advertised files for the lifetime of this exchange. */
+    fun openExchange(): MeshUpdateCache = this
+    fun closeExchange() {}
     fun availableAssets(): List<UpdateAssetDescriptor>
     fun desiredAsset(): UpdateAssetDescriptor?
     fun desiredAsset(remoteAssets: List<UpdateAssetDescriptor>): UpdateAssetDescriptor? =
@@ -117,10 +130,20 @@ class ReleaseUpdateService(
     @Volatile
     private var signedManifest: SignedReleaseManifest? = loadCachedManifest()
 
+    private val cacheLock = Any()
+    private val pinnedVersions = mutableMapOf<String, Int>()
+    @Volatile private var seedManifest: SignedReleaseManifest? = runCatching {
+        SignedReleaseManifest.decodeEnvelope(Files.readAllBytes(cacheDirectory.resolve("seed-manifest.signed")), trustedPublicKeyBase64)
+    }.getOrNull()?.takeIf { signed -> signed.manifest.assets.all { isComplete(signed.manifest.version, it) } }
+    private val mutableSeedState = MutableStateFlow(OfflineSeedState(seedManifest?.manifest?.version))
+    val seedState: StateFlow<OfflineSeedState> = mutableSeedState.asStateFlow()
+
     @Volatile
     private var pendingManifestDescriptor: UpdateAssetDescriptor? = null
 
     init {
+        signedManifest?.let(::promoteCompleteSeed)
+        pruneCachedReleases()
         refreshStateFromCache(UpdateSource.Cache)
     }
 
@@ -189,53 +212,93 @@ class ReleaseUpdateService(
     }
 
     suspend fun importOfflineBundle(input: InputStream): String = operationMutex.withLock {
-        runCatching { withContext(Dispatchers.IO) { importBundleLocked(input) } }
-            .onFailure { error ->
+        mutableSeedState.value = mutableSeedState.value.copy(preparing = true, error = null)
+        try {
+            runCatching { withContext(Dispatchers.IO) { importBundleLocked(input) } }
+                .onFailure { error ->
+                    if (error is CancellationException) throw error
+                    val stillAvailable = signedManifest?.manifest?.let { isNewerVersion(it.version, currentVersion) } == true
+                    mutableState.value = UpdateState.Failed(
+                        currentVersion,
+                        error.message ?: "Could not import the offline update bundle",
+                        updateStillAvailable = stillAvailable,
+                    )
+                }
+                .onFailure { mutableSeedState.value = mutableSeedState.value.copy(error = it.message ?: "Could not prepare offline updates") }
+                .getOrThrow()
+        } finally {
+            mutableSeedState.value = mutableSeedState.value.copy(preparing = false)
+            pruneCachedReleases()
+        }
+    }
+
+    suspend fun downloadAndImportLatestOfflineBundle(): String = operationMutex.withLock {
+        mutableSeedState.value = mutableSeedState.value.copy(preparing = true, error = null)
+        try {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    val candidate = fetchSignedManifest()
+                    rejectOutdatedOfflineBundle(candidate)
+                    acceptSignedManifest(candidate)
+                    val connection = openConnection(offlineBundleDownloadUrl(candidate.manifest))
+                    try {
+                        connection.connect()
+                        require(connection.responseCode in 200..299) { githubHttpError(connection.responseCode) }
+                        connection.inputStream.buffered().use(::importBundleLocked)
+                    } finally {
+                        connection.disconnect()
+                    }
+                }
+            }.onFailure { error ->
                 if (error is CancellationException) throw error
                 val stillAvailable = signedManifest?.manifest?.let { isNewerVersion(it.version, currentVersion) } == true
                 mutableState.value = UpdateState.Failed(
                     currentVersion,
-                    error.message ?: "Could not import the offline update bundle",
+                    error.message ?: "Could not download the offline update bundle",
                     updateStillAvailable = stillAvailable,
                 )
-            }
-            .getOrThrow()
-    }
-
-    suspend fun downloadAndImportLatestOfflineBundle(): String = operationMutex.withLock {
-        runCatching {
-            withContext(Dispatchers.IO) {
-                val candidate = fetchSignedManifest()
-                rejectOutdatedOfflineBundle(candidate)
-                acceptSignedManifest(candidate)
-                val connection = openConnection(offlineBundleDownloadUrl(candidate.manifest))
-                try {
-                    connection.connect()
-                    require(connection.responseCode in 200..299) { githubHttpError(connection.responseCode) }
-                    connection.inputStream.buffered().use(::importBundleLocked)
-                } finally {
-                    connection.disconnect()
-                }
-            }
-        }.onFailure { error ->
-            if (error is CancellationException) throw error
-            val stillAvailable = signedManifest?.manifest?.let { isNewerVersion(it.version, currentVersion) } == true
-            mutableState.value = UpdateState.Failed(
-                currentVersion,
-                error.message ?: "Could not download the offline update bundle",
-                updateStillAvailable = stillAvailable,
-            )
-        }.getOrThrow()
+            }.onFailure { mutableSeedState.value = mutableSeedState.value.copy(error = it.message ?: "Could not prepare offline updates") }.getOrThrow()
+        } finally {
+            mutableSeedState.value = mutableSeedState.value.copy(preparing = false)
+            pruneCachedReleases()
+        }
     }
 
     fun installerPath(): Path? = (state.value as? UpdateState.Ready)?.installer
 
-    override fun availableAssets(): List<UpdateAssetDescriptor> {
-        val signed = signedManifest ?: return emptyList()
-        val manifest = signed.manifest
-        return buildList {
-            add(signed.descriptor())
-            manifest.assets.filter { isComplete(manifest.version, it) }.forEach { add(it.descriptor(manifest.version)) }
+    // A complete cross-platform seed stays available until its replacement is complete.
+    private fun servingManifest(): SignedReleaseManifest? = seedManifest ?: signedManifest
+
+    private fun inventory(signed: SignedReleaseManifest): List<UpdateAssetDescriptor> = buildList {
+        add(signed.descriptor())
+        signed.manifest.assets.filter { isComplete(signed.manifest.version, it) }
+            .forEach { add(it.descriptor(signed.manifest.version)) }
+    }
+
+    override fun availableAssets(): List<UpdateAssetDescriptor> = synchronized(cacheLock) {
+        servingManifest()?.let(::inventory).orEmpty()
+    }
+
+    override fun openExchange(): MeshUpdateCache = synchronized(cacheLock) {
+        val signed = servingManifest()
+        val advertised = signed?.let(::inventory).orEmpty()
+        val version = signed?.manifest?.version
+        if (version != null) pinnedVersions[version] = (pinnedVersions[version] ?: 0) + 1
+        object : MeshUpdateCache by this@ReleaseUpdateService {
+            private var closed = false
+            override fun availableAssets() = advertised
+            override suspend fun readChunk(sha256: String, offset: Long, maxBytes: Int): ByteArray? =
+                signed?.let { readCachedChunk(it, sha256, offset, maxBytes) }
+            override fun closeExchange() = synchronized(cacheLock) {
+                if (!closed) {
+                    closed = true
+                    if (version != null) {
+                        val remaining = (pinnedVersions[version] ?: 1) - 1
+                        if (remaining == 0) pinnedVersions.remove(version) else pinnedVersions[version] = remaining
+                    }
+                    pruneCachedReleases()
+                }
+            }
         }
     }
 
@@ -281,8 +344,13 @@ class ReleaseUpdateService(
         }
     }
 
-    override suspend fun readChunk(sha256: String, offset: Long, maxBytes: Int): ByteArray? = withContext(Dispatchers.IO) {
-        val signed = signedManifest ?: return@withContext null
+    override suspend fun readChunk(sha256: String, offset: Long, maxBytes: Int): ByteArray? =
+        servingManifest()?.let { readCachedChunk(it, sha256, offset, maxBytes) }
+
+    private suspend fun readCachedChunk(
+        signed: SignedReleaseManifest, sha256: String, offset: Long, maxBytes: Int,
+    ): ByteArray? = withContext(Dispatchers.IO) {
+        require(maxBytes in 1..MeshUpdateExchange.UPDATE_CHUNK_BYTES && offset >= 0)
         val envelope = signed.envelopeBytes()
         if (SignedReleaseManifest.sha256(envelope) == sha256) {
             if (offset !in 0..envelope.size.toLong()) return@withContext null
@@ -525,10 +593,43 @@ class ReleaseUpdateService(
 
     private fun acceptSignedManifest(candidate: SignedReleaseManifest) {
         validateCandidateVersion(candidate)
+        signedManifest?.let(::promoteCompleteSeed)
         Files.createDirectories(cacheDirectory)
         writeAtomically(cacheDirectory.resolve(RELEASE_SIGNATURE_FILE), candidate.signatureBase64.toByteArray(StandardCharsets.UTF_8))
         writeAtomically(cacheDirectory.resolve(MANIFEST_FILE), candidate.manifestText.toByteArray(StandardCharsets.UTF_8))
         signedManifest = candidate
+        promoteCompleteSeed(candidate)
+        pruneCachedReleases()
+    }
+
+    private fun promoteCompleteSeed(candidate: SignedReleaseManifest) = synchronized(cacheLock) {
+        val manifest = candidate.manifest
+        val previous = seedManifest?.manifest?.version
+        if (previous != null && !isNewerVersion(manifest.version, previous)) return@synchronized
+        if (manifest.assets.map { it.platform }.toSet() != UpdatePlatform.entries.toSet() ||
+            !manifest.assets.all { isComplete(manifest.version, it) }) return@synchronized
+        Files.createDirectories(cacheDirectory)
+        writeAtomically(cacheDirectory.resolve("seed-manifest.signed"), candidate.envelopeBytes())
+        seedManifest = candidate
+        mutableSeedState.value = mutableSeedState.value.copy(version = manifest.version, error = null)
+    }
+
+    private fun pruneCachedReleases() = synchronized(cacheLock) {
+        if (!Files.isDirectory(cacheDirectory)) return@synchronized
+        val directories = Files.list(cacheDirectory).use { entries ->
+            entries.filter { path -> SemanticVersion.parse(path.fileName.toString()) != null &&
+                Files.isDirectory(path, java.nio.file.LinkOption.NOFOLLOW_LINKS) }.iterator().asSequence().toList()
+        }
+        // Retain two recent releases as well as the installed version, complete seed and active transfers.
+        val recent = directories.map { it.fileName.toString() }
+            .sortedWith(compareByDescending { SemanticVersion.parse(it) }).take(2)
+        val keep = setOfNotNull(currentVersion, signedManifest?.manifest?.version, seedManifest?.manifest?.version) + pinnedVersions.keys + recent
+        directories.filter { it.fileName.toString() !in keep }.forEach { directory ->
+            // These are app-owned release directories, never user-selected bundle paths.
+            runCatching {
+                Files.walk(directory).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach(Files::deleteIfExists) }
+            }
+        }
     }
 
     private fun validateCandidateVersion(candidate: SignedReleaseManifest) {

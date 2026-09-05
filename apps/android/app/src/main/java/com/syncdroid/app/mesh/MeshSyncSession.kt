@@ -69,6 +69,22 @@ class MeshSyncSession(
     private val folderKeys = AndroidFolderKeyStore(appContext, syncDao)
 
     suspend fun run(connection: AuthenticatedPeerConnection): MeshSyncResult {
+        val result = runFiles(connection)
+        exchangeUpdates(connection)
+        return result
+    }
+
+    suspend fun exchangeUpdates(connection: AuthenticatedPeerConnection) {
+        updateCache?.let { cache ->
+            runCatching {
+                MeshUpdateExchange(cache).run(identity.deviceId, connection.peer.deviceId,
+                    send = { connection.send(MeshSessionCodec.encode(it)) },
+                    receive = { MeshSessionCodec.decode(connection.receive()) })
+            }.onFailure { if (it is CancellationException) throw it }
+        }
+    }
+
+    suspend fun runFiles(connection: AuthenticatedPeerConnection): MeshSyncResult {
         val remoteDeviceId = connection.peer.deviceId
         require(database.meshDao().getDevice(groupId, remoteDeviceId)?.trustState == "TRUSTED") {
             "The connected device is not a trusted member of this mesh"
@@ -130,16 +146,6 @@ class MeshSyncSession(
             result
         }
         database.meshDao().updateLastSeen(groupId, remoteDeviceId, System.currentTimeMillis())
-        updateCache?.let { cache ->
-            runCatching {
-                MeshUpdateExchange(cache).run(
-                    localDeviceId = identity.deviceId,
-                    remoteDeviceId = remoteDeviceId,
-                    send = { connection.send(MeshSessionCodec.encode(it)) },
-                    receive = { MeshSessionCodec.decode(connection.receive()) },
-                )
-            }.onFailure { if (it is CancellationException) throw it }
-        }
         return MeshSyncResult(
             newChatMessages = receiveResult.newChatMessages,
             storageWarning = mergeStorageWarnings(downloadResult.warnings),

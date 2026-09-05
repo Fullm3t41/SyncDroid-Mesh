@@ -174,12 +174,13 @@ fun SettingsActionRow(
     title: String,
     detail: String,
     onClick: () -> Unit,
+    enabled: Boolean = true,
     trailing: @Composable (() -> Unit)? = null,
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .clickable(enabled = enabled, onClick = onClick)
             .padding(16.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

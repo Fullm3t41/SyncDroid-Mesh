@@ -83,6 +83,12 @@ class MeshFileSyncSession(
     private val chatAttachments = ChatAttachmentStore(store)
 
     suspend fun run(connection: AuthenticatedPeerConnection, remoteDeviceId: String): MeshFileSyncResult {
+        val result = runFiles(connection, remoteDeviceId)
+        exchangeMeshUpdates(updateCache, identity.deviceId, remoteDeviceId, connection)
+        return result
+    }
+
+    suspend fun runFiles(connection: AuthenticatedPeerConnection, remoteDeviceId: String): MeshFileSyncResult {
         history.cleanupExpired()
         val metadataCountBefore = store.exportBundle().replicatedItemCount()
         connection.send(MeshSessionCodec.encode(MeshSessionMessage.Metadata(MeshWireCodec.encode(store.exportBundle()))))
@@ -154,16 +160,6 @@ class MeshFileSyncSession(
             count
         }
         store.markSeen(profile.groupId, remoteDeviceId)
-        updateCache?.let { cache ->
-            runCatching {
-                MeshUpdateExchange(cache).run(
-                    localDeviceId = identity.deviceId,
-                    remoteDeviceId = remoteDeviceId,
-                    send = { connection.send(MeshSessionCodec.encode(it)) },
-                    receive = { MeshSessionCodec.decode(connection.receive()) },
-                )
-            }.onFailure { if (it is CancellationException) throw it }
-        }
         return MeshFileSyncResult(appliedChangeCount, metadataChanged)
         } finally {
             transferClaims.close()
@@ -316,5 +312,18 @@ private suspend inline fun <reified T : MeshSessionMessage> AuthenticatedPeerCon
         is MeshSessionMessage.Error -> error(value.reason)
         is T -> value
         else -> error("Unexpected mesh session message")
+    }
+}
+
+suspend fun exchangeMeshUpdates(
+    cache: MeshUpdateCache?, localDeviceId: String, remoteDeviceId: String,
+    connection: AuthenticatedPeerConnection,
+) {
+    cache?.let {
+        runCatching {
+            MeshUpdateExchange(it).run(localDeviceId, remoteDeviceId,
+                send = { message -> connection.send(MeshSessionCodec.encode(message)) },
+                receive = { MeshSessionCodec.decode(connection.receive()) })
+        }.onFailure { error -> if (error is CancellationException) throw error }
     }
 }

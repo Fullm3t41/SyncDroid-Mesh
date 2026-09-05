@@ -67,6 +67,12 @@ SyncDroid-Mesh connects Android, macOS and Windows devices as an equal-peer mesh
 
 Membership is replicated too. When an authorised device adds or removes a mesh member, that signed change reaches the other trusted devices during later synchronization sessions.
 
+## Offline updates
+
+Online update checks download the installer for the current device from GitHub. For devices without internet access, open **Settings → Advanced update options → Prepare updates for offline devices** on an internet-connected device. This downloads and verifies the Windows, Mac and Android installers so trusted mesh peers can receive their own installer locally. You can also import a signed `.sdu` bundle brought in from another computer.
+
+Settings shows the version ready to share. The previous complete seed remains available until a newer bundle is fully verified, even if an online check discovers a newer release or preparation fails. Older cached releases are cleaned up automatically, retaining the two most recent cached versions and any installed, selected, seeded or actively transferred version. Mesh update transfers run after file synchronization and release the file-sync lock so other peers can continue syncing.
+
 ## Security and privacy
 
 - Synchronization is local-first and does not require a SyncDroid-Mesh account or hosted coordination service.

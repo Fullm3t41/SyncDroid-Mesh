@@ -323,7 +323,7 @@ class MeshRuntime(
                 currentRate.set(bytesPerSecond)
                 publishTransferProgress()
             }
-            val result = MeshSyncSession(
+            val session = MeshSyncSession(
                 context = appContext,
                 database = database,
                 identity = identity,
@@ -339,7 +339,8 @@ class MeshRuntime(
                     incomingTransferred.addAndGet(bytes)
                     publishTransferProgress()
                 },
-            ).run(connection)
+            )
+            val result = session.runFiles(connection)
             lastSessionAtMillis[connection.peer.deviceId] = System.currentTimeMillis()
             if (result.appliedChangeCount > 0 || result.replicatedStateChanged) {
                 propagationSignals.trySend(PropagationSignal(connection.peer.deviceId))
@@ -367,6 +368,7 @@ class MeshRuntime(
                 syncedFolders,
                 result.storageWarning,
             ))
+            session.exchangeUpdates(connection)
         } catch (error: PeerSessionBusyException) {
             Log.d(TAG, "Concurrent session with $peerName was superseded")
             throw error
