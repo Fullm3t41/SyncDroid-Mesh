@@ -113,7 +113,7 @@ The application names, logos and icons remain reserved project branding. Forks a
 
 ### Delete a file across the mesh
 
-On Windows or Mac, expand a folder and choose **Delete from all devices**, select the files, then confirm. On Android, select files in the folder contents and choose **Delete from all devices** in the removal dialog. This explicit action also works when the originating folder uses Overwrite only.
+On Windows or Mac, expand a folder and choose **Manage files** beside Open in Finder/Explorer. The list shows each file’s name, last recorded sync date, and the device that originally changed the current version. Use the bin beside a file to choose **Delete from this device** or **Delete from all devices**. Device-only deletion keeps the other copies and excludes the path from downloads until **Allow syncing again** is selected. On Android, select files in the folder contents and choose **Delete from all devices** in the removal dialog. This explicit action also works when the originating folder uses Overwrite only.
 
 The deletion is saved for other configured devices to receive on their next mesh or cloud sync. Off registered Wi-Fi, use **Sync cloud now** to publish or receive it. Independently edited copies become conflicts; they are not silently erased. Deletion recovery copies are retained for 30 days in File history. Cloud storage can retain encrypted obsolete objects until its cleanup grace period expires.
 
