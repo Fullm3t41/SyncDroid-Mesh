@@ -181,6 +181,7 @@ internal class DesktopCloudFolderTransfer(
             }
         }
 
+        val uploaded = mutableSetOf<String>()
         val current = requireNotNull(engine.buildFullUpdate(folderId))
         current.files.filterNot { it.deleted }.forEach { file ->
             val objectName = CloudEncryptedObjects.publisherFileName(key, identity.deviceId, file.fileId, file.contentSha256)
@@ -191,6 +192,7 @@ internal class DesktopCloudFolderTransfer(
                 try {
                     CloudEncryptedObjects.encryptFile(key, file.fileId, file.contentSha256, source, encrypted)
                     remote.upload(folderRootId, objectName, encrypted)
+                    uploaded += file.relativePath
                     result = result.copy(
                         uploadedFiles = result.uploadedFiles + 1,
                         transferredBytes = result.transferredBytes + file.sizeBytes,
@@ -208,6 +210,11 @@ internal class DesktopCloudFolderTransfer(
             remote.upload(folderRootId, CloudEncryptedObjects.manifestName(key, identity.deviceId), manifestFile)
         } finally {
             Files.deleteIfExists(manifestFile)
+        }
+        current.files.filterNot { it.deleted }.forEach { file ->
+            store.fileVersion(folderId, file.relativePath)?.let {
+                if (file.relativePath in uploaded || store.lastSyncedAt(it) == null) store.noteFileSynced(it)
+            }
         }
         val liveNames = current.files.filterNot { it.deleted }.mapTo(mutableSetOf()) {
             CloudEncryptedObjects.publisherFileName(key, identity.deviceId, it.fileId, it.contentSha256)

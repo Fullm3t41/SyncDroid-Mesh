@@ -151,12 +151,14 @@ class MeshFileSyncSession(
         val appliedChangeCount = if (identity.deviceId < remoteDeviceId) {
             val count = downloadPhase(connection, remoteDeviceId, prepared, missingAttachments, engine)
             connection.send(MeshSessionCodec.encode(MeshSessionMessage.PhaseDone))
-            serveRequests(connection, remoteRequests, engine)
+            val sent = serveRequests(connection, remoteRequests, engine)
             connection.receiveSession<MeshSessionMessage.PhaseDone>()
+            sent.forEach { store.noteFileSynced(it) }
             count
         } else {
-            serveRequests(connection, remoteRequests, engine)
+            val sent = serveRequests(connection, remoteRequests, engine)
             connection.receiveSession<MeshSessionMessage.PhaseDone>()
+            sent.forEach { store.noteFileSynced(it) }
             val count = downloadPhase(connection, remoteDeviceId, prepared, missingAttachments, engine)
             connection.send(MeshSessionCodec.encode(MeshSessionMessage.PhaseDone))
             count
@@ -250,7 +252,10 @@ class MeshFileSyncSession(
                         engine.markRemoteApplied(remoteDeviceId, plan.remote, folderId !in acknowledgementBlocked)
                     }
                     appliedChangeCount++
-                    if (!plan.remote.deleted) history.recordSynced(plan.remote.copy(relativePath = plan.relativePath))
+                    if (!plan.remote.deleted) {
+                        history.recordSynced(plan.remote.copy(relativePath = plan.relativePath))
+                        store.fileVersion(folderId, plan.relativePath)?.let { store.noteFileSynced(it) }
+                    }
                 }
             }
         }
@@ -264,7 +269,8 @@ class MeshFileSyncSession(
         connection: AuthenticatedPeerConnection,
         requestCount: Int,
         engine: FileSyncEngine,
-    ) {
+    ): Set<FileVersion> {
+        val sent = mutableSetOf<FileVersion>()
         repeat(requestCount) {
             val request = FileTransferWireCodec.decode(connection.receive())
             if (request is FileTransferMessage.AttachmentRequest) {
@@ -280,9 +286,17 @@ class MeshFileSyncSession(
             if (root == null) {
                 connection.send(FileTransferWireCodec.encode(FileTransferMessage.Error("Folder is not available on this PC")))
             } else {
+                val path = when (request) {
+                    is FileTransferMessage.WholeFileRequest -> request.relativePath
+                    is FileTransferMessage.BlockRequest -> request.relativePath
+                    else -> null
+                }
+                val file = path?.let { store.fileVersion(requireNotNull(folderId), it) }
                 PeerFileServer(store, root, onBytesTransferred).serve(connection, request)
+                if (file != null && !file.deleted) sent += file
             }
         }
+        return sent
     }
 
     private fun transferCache(): java.nio.file.Path = WindowsAppPaths.transfers

@@ -216,8 +216,9 @@ fun SyncToshApp(
                             )
                             MainSection.Folders -> FoldersScreen(
                                 folders = meshState.folders,
-                                loadDeleteFiles = runtime::filesForMeshDeletion,
-                                onDeleteFiles = runtime::deleteFilesFromAllDevices,
+                                loadManagedFiles = runtime::filesForManagement,
+                                onDeleteFile = runtime::deleteManagedFile,
+                                onRestoreFile = runtime::restoreManagedFile,
                                 cloudPolicy = cloudPolicy,
                                 onAddFolder = { featureNotice = "Folder access" },
                                 onConfigureFolder = { folderToConfigure = it },

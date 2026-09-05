@@ -535,11 +535,23 @@ class MeshRuntime(
         return chatAttachments.localPath(message)
     }
 
-    suspend fun filesForMeshDeletion(folderId: String): List<String> = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+    suspend fun filesForManagement(folderId: String): List<ManagedFile> = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        syncMutex.withLock { FileSyncEngine(store, identity, requireNotNull(store.profile())).managedFiles(folderId) }
+    }
+
+    suspend fun restoreManagedFile(folderId: String, relativePath: String) = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
         syncMutex.withLock {
-            val profile = requireNotNull(store.profile())
-            FileSyncEngine(store, identity, profile).scanConfiguredFolders()
-            store.fileVersions(folderId).filterNot { it.deleted }.map { it.relativePath }.sorted()
+            FileSyncEngine(store, identity, requireNotNull(store.profile())).allowFileSyncAgain(folderId, relativePath)
+            refresh("File can download again on the next sync")
+        }
+    }
+
+    suspend fun deleteManagedFile(folderId: String, relativePath: String, allDevices: Boolean) = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        syncMutex.withLock {
+            val engine = FileSyncEngine(store, identity, requireNotNull(store.profile()))
+            if (allDevices) engine.deleteFromAllDevices(folderId, listOf(relativePath))
+            else engine.deleteFromThisDevice(folderId, relativePath)
+            refresh(if (allDevices) "Deletion saved · applies on the next sync" else "File removed from this device · other copies are kept")
         }
     }
 
@@ -555,8 +567,15 @@ class MeshRuntime(
         val profile = store.profile() ?: return@launch
         updateBusy("Recovering file…")
         runCatching {
-            fileHistory.recover(eventId, profile)
-            FileSyncEngine(store, identity, profile).scanConfiguredFolders(recordHistory = false)
+            syncMutex.withLock {
+                val path = fileHistory.recover(eventId, profile)
+                store.historyEvent(eventId)?.folderId?.let { folderId ->
+                    if (store.localActiveSyncException(folderId, path, identity.deviceId)) {
+                        store.recordSyncException(folderId, path, active = false, signer = identity)
+                    }
+                }
+                FileSyncEngine(store, identity, profile).scanConfiguredFolders(recordHistory = false)
+            }
             refresh("File recovered · ready to sync")
             connectToAvailablePeers(profile, discoveredPeers().values, initiatorOrdering = false)
         }.onFailure(::report)
@@ -566,7 +585,13 @@ class MeshRuntime(
         val profile = store.profile() ?: return@launch
         updateBusy("Restoring $relativePath to synchronization…")
         runCatching {
-            store.recordSyncException(folderId, relativePath, active = false, signer = identity)
+            syncMutex.withLock {
+                val root = FileSyncEngine(store, identity, profile).configuredRoot(folderId)
+                if (root != null && !java.nio.file.Files.exists(root.resolve(relativePath))) {
+                    store.resetExcludedFile(folderId, relativePath, identity.deviceId)
+                }
+                store.recordSyncException(folderId, relativePath, active = false, signer = identity)
+            }
             refresh("Exception removed · file can sync again")
             connectToAvailablePeers(profile, discoveredPeers().values, initiatorOrdering = false)
         }.onFailure(::report)

@@ -14,6 +14,13 @@ import java.security.SecureRandom
 import java.util.UUID
 import kotlin.io.path.invariantSeparatorsPathString
 
+data class ManagedFile(
+    val relativePath: String,
+    val lastSyncedAtMillis: Long?,
+    val sourceDeviceName: String,
+    val onThisDevice: Boolean,
+)
+
 data class FileSyncPlan(
     val action: FileSyncAction,
     val relativePath: String,
@@ -52,6 +59,41 @@ class FileSyncEngine(
         store.configuredFolders(profile.groupId, identity.deviceId).forEach { scanFolder(it, recordHistory) }
     }
 
+    fun managedFiles(folderId: String): List<ManagedFile> {
+        val folder = requireNotNull(store.configuredFolders(profile.groupId, identity.deviceId).find { it.folderId == folderId })
+        scanFolder(folder, true)
+        val root = requireNotNull(configuredRoot(folderId))
+        val names = store.devices(profile.groupId).associate { it.deviceId to it.displayName }
+        return store.fileVersions(folderId).filterNot { it.deleted }.sortedBy { it.relativePath }.map {
+            ManagedFile(it.relativePath, store.lastSyncedAt(it), names[it.originDeviceId] ?: it.originDeviceId.ifBlank { "Unknown device" },
+                Files.isRegularFile(root.resolve(it.relativePath)))
+        }
+    }
+
+    fun allowFileSyncAgain(folderId: String, relativePath: String) {
+        val root = requireNotNull(configuredRoot(folderId))
+        val path = normalizedRelativePath(relativePath)
+        if (!Files.exists(root.resolve(path))) store.resetExcludedFile(folderId, path, identity.deviceId)
+        store.recordSyncException(folderId, path, active = false, signer = identity)
+    }
+
+    fun deleteFromThisDevice(folderId: String, relativePath: String) {
+        val root = requireNotNull(configuredRoot(folderId))
+        val file = requireNotNull(store.fileVersion(folderId, normalizedRelativePath(relativePath)))
+        require(!file.deleted && Files.isRegularFile(root.resolve(file.relativePath))) { "This file is not on this device" }
+        val wasExcluded = store.localActiveSyncException(folderId, file.relativePath, identity.deviceId)
+        store.recordSyncException(folderId, file.relativePath, active = true, signer = identity)
+        try { history.deleteWithRecovery(root, file, identity.deviceId) }
+        catch (error: Exception) {
+            if (!wasExcluded && Files.exists(root.resolve(file.relativePath))) {
+                store.recordSyncException(folderId, file.relativePath, active = false, signer = identity)
+            }
+            throw error
+        }
+        val state = requireNotNull(store.folderIndexState(folderId, identity.deviceId))
+        store.saveLocalIndex(emptyList(), state.copy(indexEpoch = randomEpoch()))
+    }
+
     /** Explicit deletion bypasses overwrite-only scanning and retains a versioned tombstone. */
     fun deleteFromAllDevices(folderId: String, paths: List<String>, permanent: Boolean = false) {
         val root = requireNotNull(configuredRoot(folderId)) { "Folder is not configured" }
@@ -64,7 +106,7 @@ class FileSyncEngine(
             val state = requireNotNull(store.folderIndexState(folderId, identity.deviceId))
             val now = System.currentTimeMillis()
             if (permanent) history.deletePermanently(root, version)
-            else history.deleteWithRecovery(root, version, identity.deviceId, now)
+            else if (Files.exists(root.resolve(version.relativePath))) history.deleteWithRecovery(root, version, identity.deviceId, now)
             val sequence = state.maxSequence + 1
             store.saveLocalIndex(listOf(version.copy(sizeBytes = 0, modifiedAtMillis = now,
                 contentSha256 = "", previousContentSha256 = version.contentSha256, deleted = true,
@@ -110,7 +152,7 @@ class FileSyncEngine(
                 range.previousSequence,
                 range.lastSequence,
                 range.fullIndex,
-                versions.map { it.toIndexedRecord(root) },
+                versions.filter { it.deleted || !store.localActiveSyncException(folderId = it.folderId, relativePath = it.relativePath, deviceId = identity.deviceId) }.map { it.toIndexedRecord(root) },
             )
         }
     }
@@ -127,7 +169,7 @@ class FileSyncEngine(
             0,
             local.maxSequence,
             true,
-            versions.map { it.toIndexedRecord(root) },
+            versions.filter { it.deleted || !store.localActiveSyncException(folderId = it.folderId, relativePath = it.relativePath, deviceId = identity.deviceId) }.map { it.toIndexedRecord(root) },
         )
     }
 
@@ -249,7 +291,7 @@ class FileSyncEngine(
         val scannedPaths = scanned.mapTo(mutableSetOf(), ScannedFile::relativePath)
         previous.forEach { (path, old) ->
             if (path in scannedPaths) return@forEach
-            updated[path] = if (old.deleted) old else {
+            updated[path] = if (old.deleted || store.localActiveSyncException(folder.folderId, path, identity.deviceId)) old else {
                 changed = true
                 nextSequence++
                 old.copy(

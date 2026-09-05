@@ -7,6 +7,31 @@ import kotlinx.coroutines.runBlocking
 import kotlin.test.*
 
 class CloudFolderTransferTest {
+    @Test fun localDeletionKeepsPeersCopiesAndCanBeUndone() = runBlocking {
+        Fixture().use { f ->
+            val id = f.folders.first().folderId
+            val a = f.rootsA.first().resolve("save.dat")
+            val b = f.rootsB.first().resolve("save.dat")
+            Files.writeString(a, "keep elsewhere")
+            f.runA(id); f.runB(id)
+            val engine = FileSyncEngine(f.sa, f.a, f.sa.profile()!!)
+            assertNotNull(engine.managedFiles(id).single().lastSyncedAtMillis)
+            engine.deleteFromThisDevice(id, "save.dat")
+            assertFalse(Files.exists(a))
+            assertFalse(f.sa.fileVersion(id, "save.dat")!!.deleted)
+            f.runA(id); f.runB(id); f.runA(id)
+            assertFalse(Files.exists(a))
+            assertEquals("keep elsewhere", Files.readString(b))
+            assertFalse(engine.managedFiles(id).single().onThisDevice)
+            assertTrue(engine.buildFullUpdate(id)!!.files.isEmpty())
+            engine.allowFileSyncAgain(id, "save.dat")
+            f.runA(id)
+            assertEquals("keep elsewhere", Files.readString(a))
+            Files.writeString(a, "unsynced edit")
+            assertNull(engine.managedFiles(id).single().lastSyncedAtMillis)
+        }
+    }
+
     @Test fun permanentDeletionRemovesRecoveryCopiesOnBothDevices() = runBlocking {
         Fixture().use { f ->
             val id = f.folders.first().folderId

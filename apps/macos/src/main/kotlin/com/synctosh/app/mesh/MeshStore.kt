@@ -278,7 +278,6 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
 
     @Synchronized
     fun localActiveSyncException(folderId: String, relativePath: String, deviceId: String): Boolean {
-        if (!activeSyncException(folderId, relativePath)) return false
         return connection.prepareStatement(
             """SELECT active, version_json, event_id FROM sync_exception_events
                WHERE folder_id = ? AND relative_path = ? AND signer_device_id = ?""",
@@ -466,6 +465,36 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
         ).use {
             it.setString(1, value.folderId); it.setString(2, value.keyId); it.setString(3, value.encryptedKey)
             it.setLong(4, System.currentTimeMillis()); it.executeUpdate()
+        }
+    }
+
+    @Synchronized
+    fun noteFileSynced(file: FileVersion, nowMillis: Long = System.currentTimeMillis()) {
+        if (file.deleted) return
+        connection.prepareStatement("""INSERT INTO file_sync_receipts(folder_id, relative_path, content_sha256, version_json, synced_at)
+            VALUES (?, ?, ?, ?, ?) ON CONFLICT(folder_id, relative_path) DO UPDATE SET
+            content_sha256 = excluded.content_sha256, version_json = excluded.version_json, synced_at = excluded.synced_at""").use {
+            it.setString(1, file.folderId); it.setString(2, file.relativePath); it.setString(3, file.contentSha256)
+            it.setString(4, file.version.toJson()); it.setLong(5, nowMillis); it.executeUpdate()
+        }
+    }
+
+    @Synchronized
+    fun lastSyncedAt(file: FileVersion): Long? = connection.prepareStatement(
+        "SELECT synced_at FROM file_sync_receipts WHERE folder_id = ? AND relative_path = ? AND content_sha256 = ? AND version_json = ?",
+    ).use {
+        it.setString(1, file.folderId); it.setString(2, file.relativePath); it.setString(3, file.contentSha256)
+        it.setString(4, file.version.toJson())
+        it.executeQuery().use { rows -> if (rows.next()) rows.getLong(1) else null }
+    }
+
+    @Synchronized
+    fun resetExcludedFile(folderId: String, relativePath: String, localDeviceId: String) = transaction {
+        connection.prepareStatement("DELETE FROM file_versions WHERE folder_id = ? AND relative_path = ?").use {
+            it.setString(1, folderId); it.setString(2, relativePath); it.executeUpdate()
+        }
+        connection.prepareStatement("DELETE FROM folder_index_states WHERE folder_id = ? AND device_id <> ?").use {
+            it.setString(1, folderId); it.setString(2, localDeviceId); it.executeUpdate()
         }
     }
 
@@ -1338,6 +1367,9 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
                 }
                 if ("purge_recovery" !in columns) statement.executeUpdate("ALTER TABLE $table ADD COLUMN purge_recovery INTEGER NOT NULL DEFAULT 0")
             }
+            statement.executeUpdate("""CREATE TABLE IF NOT EXISTS file_sync_receipts(
+                folder_id TEXT NOT NULL, relative_path TEXT NOT NULL, content_sha256 TEXT NOT NULL,
+                version_json TEXT NOT NULL, synced_at INTEGER NOT NULL, PRIMARY KEY(folder_id, relative_path))""")
             statement.executeUpdate("CREATE INDEX IF NOT EXISTS index_file_versions_sequence ON file_versions(folder_id, local_sequence)")
             statement.executeUpdate("CREATE INDEX IF NOT EXISTS index_remote_file_versions_sequence ON remote_file_versions(folder_id, device_id, remote_sequence)")
             statement.executeUpdate("CREATE INDEX IF NOT EXISTS index_file_history_created ON file_history(created_at_millis)")

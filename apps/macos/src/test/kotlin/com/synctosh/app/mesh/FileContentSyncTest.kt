@@ -60,6 +60,13 @@ class FileContentSyncTest {
                 syncOnce(firstStore, firstIdentity, profile, secondStore, secondIdentity, secondProfile)
                 assertContentEquals(byteArrayOf(1, 2, 3, 4), Files.readAllBytes(secondFolder.resolve("nested/slot.sav")))
                 assertContentEquals(largeContent, Files.readAllBytes(secondFolder.resolve("large.sav")))
+                for (path in listOf("nested/slot.sav", "large.sav")) {
+                    assertTrue(firstStore.lastSyncedAt(firstStore.fileVersion(folder.folderId, path)!!) != null)
+                    assertTrue(secondStore.lastSyncedAt(secondStore.fileVersion(folder.folderId, path)!!) != null)
+                }
+                assertTrue(FileSyncEngine(secondStore, secondIdentity, secondProfile).managedFiles(folder.folderId)
+                    .all { it.sourceDeviceName == "First Mac" })
+
 
                 Files.write(secondFolder.resolve("nested/slot.sav"), byteArrayOf(9, 8, 7, 6, 5))
                 syncOnce(firstStore, firstIdentity, profile, secondStore, secondIdentity, secondProfile)
