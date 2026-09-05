@@ -15,3 +15,5 @@ tar -czf "$root/build/release/SyncDeck-Linux-x64-preview.tar.gz" -C "$(dirname "
 
 python3 "$root/installer/make-installer.py" "$root/build/release/SyncDeck-Linux-x64-preview.tar.gz" "$root/build/release/SyncDeck-SteamDeck-Preview-1.run"
 (cd "$root/build/release" && sha256sum SyncDeck-SteamDeck-Preview-1.run > SHA256SUMS.txt)
+
+python3 "$root/installer/smoke-installer.py" "$root/build/release/SyncDeck-SteamDeck-Preview-1.run"

@@ -21,11 +21,13 @@ bash apps/linux/installer/package.sh
 
 This runs the unit tests, creates a self-contained application image including Java, exercises headless worker startup/shutdown, and produces `apps/linux/build/release/SyncDeck-Linux-x64-preview.tar.gz`. The `SyncDeck Linux preview` workflow provides Linux and Decky artifact jobs separately from stable releases.
 
-Extract the archive in Desktop Mode and run:
+Download `SyncDeck-SteamDeck-Preview-1.run` from the preview build artifacts onto your Deck. In Desktop Mode, open Konsole in the download folder and run:
 
 ```sh
-python3 install.py ./SyncDeck
+bash SyncDeck-SteamDeck-Preview-1.run
 ```
+
+Alternatively, enable executable permission in Dolphin's file properties and run the installer there. The installer verifies its bundled payload before installing, displays a completion dialog when KDE's `kdialog` is available, and offers to open SyncDeck.
 
 Run as the desktop user, without sudo. This installs under `~/.local/opt/syncdeck` and creates an application-menu entry. It leaves SteamOS's read-only system partition untouched. Exit SyncDeck and disable its Decky plugin before reinstalling; the installer refuses while the worker owns its lock. The prior installation is retained at `~/.local/opt/syncdeck.previous`.
 
