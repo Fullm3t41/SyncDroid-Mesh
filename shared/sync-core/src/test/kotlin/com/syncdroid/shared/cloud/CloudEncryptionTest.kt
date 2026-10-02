@@ -19,8 +19,28 @@ class CloudEncryptionTest {
             listOf(IndexedFileRecord("save.sav", "file", 3, 4, "abc", null, "phone", false, VersionVector(mapOf("phone" to 1)), 1)),
         )
         val expected = CloudFolderManifest("folder", "Saves", "phone", 99, update)
-        val encrypted = CloudEncryptedObjects.encryptManifest(key, expected)
-        assertEquals(expected, CloudEncryptedObjects.decryptManifest(key, "phone", encrypted))
+        val publisher = ecKeyPair()
+        val encrypted = CloudEncryptedObjects.encryptManifest(key, expected) { sign(publisher.private, it) }
+        assertEquals(expected, CloudEncryptedObjects.decryptManifest(key, "phone", encrypted, publisher.public))
+    }
+
+    @Test
+    fun manifestSignedByAnotherKeyHolderIsRejected() {
+        val update = FolderIndexUpdate("folder", 7, 0, 0, true, emptyList())
+        val forged = CloudFolderManifest("folder", "Saves", "phone", Long.MAX_VALUE, update)
+        val formerMember = ecKeyPair()
+        val encrypted = CloudEncryptedObjects.encryptManifest(key, forged) { sign(formerMember.private, it) }
+        assertFailsWith<IllegalArgumentException> {
+            CloudEncryptedObjects.decryptManifest(key, "phone", encrypted, ecKeyPair().public)
+        }
+    }
+
+    private fun ecKeyPair() = java.security.KeyPairGenerator.getInstance("EC").run {
+        initialize(java.security.spec.ECGenParameterSpec("secp256r1")); generateKeyPair()
+    }
+
+    private fun sign(key: java.security.PrivateKey, payload: ByteArray) = java.security.Signature.getInstance("SHA256withECDSA").run {
+        initSign(key); update(payload); sign()
     }
 
     @Test

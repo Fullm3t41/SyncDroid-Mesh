@@ -188,7 +188,12 @@ class MeshSyncSession(
                 val temp = File.createTempFile("cloud-manifest-", ".sdenc", transferCache())
                 try {
                     remote.download(item.id, temp.toPath())
-                    candidateKey to CloudEncryptedObjects.decryptManifest(candidateKey, publisher.deviceId, temp.readBytes())
+                    // An unsigned or forged manifest is skipped rather than stopping this folder's sync.
+                    runCatching {
+                        candidateKey to CloudEncryptedObjects.decryptManifest(
+                            candidateKey, publisher.deviceId, temp.readBytes(), decodePublicKey(publisher.publicKeyBase64),
+                        )
+                    }.getOrNull()
                 } finally { temp.delete() }
             }
             val (sourceKey, manifest) = manifests.maxByOrNull { it.second.publishedAtMillis } ?: continue
@@ -263,7 +268,7 @@ class MeshSyncSession(
             System.currentTimeMillis(), current, publisherScopedFiles = true)
         val temp = File.createTempFile("cloud-publish-", ".sdenc", transferCache())
         try {
-            temp.writeBytes(CloudEncryptedObjects.encryptManifest(key, manifest))
+            temp.writeBytes(CloudEncryptedObjects.encryptManifest(key, manifest, identity::sign))
             remote.upload(parent, CloudEncryptedObjects.manifestName(key, identity.deviceId), temp.toPath())
         } finally { temp.delete() }
         val ledgerId = UUID.nameUUIDFromBytes(parent.toByteArray())

@@ -4,6 +4,7 @@ import com.syncdroid.shared.protocol.FolderIndexUpdate
 import com.syncdroid.shared.protocol.MeshSessionMessage
 import com.syncdroid.shared.protocol.MeshSessionWireCodec
 import com.syncdroid.shared.protocol.WrappedFolderKeyTransfer
+import com.syncdroid.shared.protocol.verifyEcdsaSha256
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
@@ -11,6 +12,7 @@ import java.io.DataOutputStream
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
+import java.security.PublicKey
 import java.security.SecureRandom
 import java.util.Base64
 import javax.crypto.Cipher
@@ -71,40 +73,63 @@ object CloudEncryptedObjects {
     fun publisherFileName(key: FolderKeyMaterial, publisherDeviceId: String, fileId: String, hash: String): String =
         publisherFilePrefix(key, publisherDeviceId) + fileName(key, fileId, hash)
 
-    fun encryptManifest(key: FolderKeyMaterial, manifest: CloudFolderManifest): ByteArray {
+    /**
+     * Every device holding the folder key can encrypt, including one later removed from the mesh, so
+     * manifests are also signed by the publisher's identity key. [sign] signs with that key.
+     */
+    fun encryptManifest(key: FolderKeyMaterial, manifest: CloudFolderManifest, sign: (ByteArray) -> ByteArray): ByteArray {
         require(manifest.folderId == key.folderId && manifest.index.folderId == key.folderId)
-        val plaintext = ByteArrayOutputStream().use { bytes ->
+        val body = ByteArrayOutputStream().use { bytes ->
             DataOutputStream(bytes).use { output ->
                 output.writeInt(MANIFEST_MAGIC)
-                output.writeInt(if (manifest.publisherScopedFiles) 3 else MANIFEST_VERSION)
+                output.writeInt(SIGNED_MANIFEST_VERSION)
                 output.writeString(manifest.folderId)
                 output.writeString(manifest.folderName)
                 output.writeString(manifest.publisherDeviceId)
                 output.writeLong(manifest.publishedAtMillis)
-                if (manifest.publisherScopedFiles) output.writeBoolean(true)
+                output.writeBoolean(manifest.publisherScopedFiles)
                 output.writeData(MeshSessionWireCodec.encode(MeshSessionMessage.IndexBatch(listOf(manifest.index))))
+            }
+            bytes.toByteArray()
+        }
+        val plaintext = ByteArrayOutputStream().use { bytes ->
+            DataOutputStream(bytes).use { output ->
+                output.write(body)
+                output.writeData(sign(MANIFEST_SIGNATURE_CONTEXT + body))
             }
             bytes.toByteArray()
         }
         return encryptBytes(key, "manifest\u0000${manifest.publisherDeviceId}", plaintext)
     }
 
-    fun decryptManifest(key: FolderKeyMaterial, publisherDeviceId: String, encrypted: ByteArray): CloudFolderManifest {
+    /** Decrypts a manifest and verifies it was signed by [publisherPublicKey]. */
+    fun decryptManifest(
+        key: FolderKeyMaterial,
+        publisherDeviceId: String,
+        encrypted: ByteArray,
+        publisherPublicKey: PublicKey,
+    ): CloudFolderManifest {
         val plaintext = decryptBytes(key, "manifest\u0000$publisherDeviceId", encrypted)
         return DataInputStream(ByteArrayInputStream(plaintext)).use { input ->
             require(input.readInt() == MANIFEST_MAGIC) { "Invalid cloud manifest" }
-            val format = input.readInt()
-            require(format in MANIFEST_VERSION..3) { "Unsupported cloud manifest" }
+            require(input.readInt() == SIGNED_MANIFEST_VERSION) {
+                "This device's cloud manifest is unsigned. Update its app to sync through the cloud."
+            }
             val folderId = input.readString()
             val folderName = input.readString()
             val publisher = input.readString()
             val published = input.readLong()
-            val scoped = format >= 3 && input.readBoolean()
+            val scoped = input.readBoolean()
             require(folderId == key.folderId && publisher == publisherDeviceId) { "Cloud manifest identity mismatch" }
             val message = MeshSessionWireCodec.decode(input.readData()) as? MeshSessionMessage.IndexBatch
                 ?: error("Cloud manifest does not contain a folder index")
             require(message.updates.size == 1 && message.updates.single().folderId == folderId)
+            val body = plaintext.copyOf(plaintext.size - input.available())
+            val signature = input.readData()
             require(input.available() == 0)
+            require(verifyEcdsaSha256(publisherPublicKey, MANIFEST_SIGNATURE_CONTEXT + body, Base64.getEncoder().encodeToString(signature))) {
+                "Cloud manifest signature is invalid"
+            }
             CloudFolderManifest(folderId, folderName, publisher, published, message.updates.single(), scoped)
         }
     }
@@ -306,7 +331,8 @@ object CloudEncryptedObjects {
     private const val MAX_FILE_CHUNK_BYTES = 16 * 1024 * 1024
     private const val CHUNK_NONCE_PREFIX_BYTES = 8
     private const val MANIFEST_MAGIC = 0x5344434D
-    private const val MANIFEST_VERSION = 2
+    private const val SIGNED_MANIFEST_VERSION = 4
+    private val MANIFEST_SIGNATURE_CONTEXT = "syncdroid-cloud-manifest-v4\u0000".toByteArray()
     private const val MAX_MANIFEST_BYTES = 64 * 1024 * 1024
     private const val NONCE_BYTES = 12
     private const val TAG_BITS = 128

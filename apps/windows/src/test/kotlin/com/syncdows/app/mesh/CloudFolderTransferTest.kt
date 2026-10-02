@@ -279,7 +279,7 @@ class CloudFolderTransferTest {
             CloudEncryptedObjects.encryptFile(oldB, file.fileId, file.contentSha256, f.rootsB[0].resolve("save.dat"), encrypted)
             f.remote.upload(root, CloudEncryptedObjects.fileName(oldB, file.fileId, file.contentSha256), encrypted)
             Files.write(encrypted, CloudEncryptedObjects.encryptManifest(oldB,
-                CloudFolderManifest(folder.folderId, folder.displayName, f.b.deviceId, System.currentTimeMillis(), index)))
+                CloudFolderManifest(folder.folderId, folder.displayName, f.b.deviceId, System.currentTimeMillis(), index), f.b::sign))
             f.remote.upload(root, CloudEncryptedObjects.manifestName(oldB, f.b.deviceId), encrypted)
             ka.import(oldB); kb.import(oldA)
             assertEquals(ka.existing(folder.folderId)!!.keyId, kb.existing(folder.folderId)!!.keyId)
