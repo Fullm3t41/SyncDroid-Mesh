@@ -1,7 +1,5 @@
 package com.syncdows.app.mesh
 
-import com.syncdroid.shared.protocol.MESH_SESSION_BUSY_REASON
-import com.syncdroid.shared.protocol.MeshSessionMessage
 import java.net.InetAddress
 import java.nio.file.Files
 import kotlin.test.Test
@@ -95,7 +93,7 @@ class StableSessionTest {
                 // The inviter already has a session with the joiner, so it declines this duplicate one.
                 val server = MeshPeerServer(DeviceTlsContext(inviterIdentity, allowUnknownPeer = true)) { connection ->
                     StablePeerAuthenticator(inviterStore, inviterIdentity, profile.groupId).authenticate(connection)
-                    connection.send(MeshSessionCodec.encode(MeshSessionMessage.Error(MESH_SESSION_BUSY_REASON)))
+                    connection.declineAsBusy()
                 }
                 try {
                     val port = server.start()

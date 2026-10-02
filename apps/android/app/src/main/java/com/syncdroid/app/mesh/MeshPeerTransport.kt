@@ -41,6 +41,25 @@ class AuthenticatedPeerConnection internal constructor(
         ByteArray(size).also(input::readFully)
     }
 
+    /** Discards incoming messages until the peer hangs up or [timeoutMillis] passes. */
+    internal suspend fun drainUntilClosed(timeoutMillis: Long) {
+        withContext(Dispatchers.IO) {
+            val deadline = System.currentTimeMillis() + timeoutMillis
+            runCatching {
+                while (true) {
+                    val remaining = deadline - System.currentTimeMillis()
+                    if (remaining <= 0) break
+                    socket.soTimeout = remaining.toInt()
+                    var unread = input.readInt().also { require(it in 0..MAX_MESSAGE_BYTES) }
+                    while (unread > 0) {
+                        val skipped = input.skipBytes(unread)
+                        if (skipped > 0) unread -= skipped else { input.readByte(); unread-- }
+                    }
+                }
+            }
+        }
+    }
+
     override fun close() = socket.close()
 
     internal fun bindAuthenticatedPeer(value: PeerIdentity) {

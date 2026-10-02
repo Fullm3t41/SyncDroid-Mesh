@@ -345,6 +345,16 @@ private suspend inline fun <reified T : MeshSessionMessage> AuthenticatedPeerCon
 /** The peer already has a session with this device, so this connection was a duplicate rather than a failed sync. */
 internal class PeerSessionBusyException : IllegalStateException(MESH_SESSION_BUSY_REASON)
 
+/** Declines a duplicate session so the peer sees a collision instead of a failed sync. */
+internal suspend fun AuthenticatedPeerConnection.declineAsBusy() {
+    runCatching { send(MeshSessionCodec.encode(MeshSessionMessage.Error(MESH_SESSION_BUSY_REASON))) }
+    // Closing with the peer's opening message unread resets the connection, and Windows then
+    // discards the reply before the peer can read it. Wait for the peer to hang up first.
+    drainUntilClosed(BUSY_DRAIN_TIMEOUT_MILLIS)
+}
+
+private const val BUSY_DRAIN_TIMEOUT_MILLIS = 2_000L
+
 suspend fun exchangeMeshUpdates(
     cache: MeshUpdateCache?, localDeviceId: String, remoteDeviceId: String,
     connection: AuthenticatedPeerConnection,

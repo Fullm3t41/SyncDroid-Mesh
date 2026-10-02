@@ -1,7 +1,5 @@
 package com.syncdows.app.mesh
 
-import com.syncdroid.shared.protocol.MESH_SESSION_BUSY_REASON
-import com.syncdroid.shared.protocol.MeshSessionMessage
 import com.syncdroid.shared.protocol.PairingCompletionMessage
 import com.syncdroid.shared.sync.MeshRouteCandidate
 import com.syncdroid.shared.sync.initialMeshFanoutTargets
@@ -791,7 +789,7 @@ class MeshRuntime(
             if (!activeSessions.add(remoteId)) {
                 // Both devices dialled each other at once. Say so explicitly; a bare close looks
                 // like a failed sync to the peer even though the other session carries on.
-                runCatching { connection.send(MeshSessionCodec.encode(MeshSessionMessage.Error(MESH_SESSION_BUSY_REASON))) }
+                connection.declineAsBusy()
                 return
             }
             updatePeerSyncState(remoteId)

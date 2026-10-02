@@ -316,6 +316,9 @@ class MeshRuntime(
             runCatching {
                 connection.send(MeshSessionCodec.encode(MeshSessionMessage.Error(SESSION_BUSY_REASON)))
             }
+            // Closing with the peer's opening message unread resets the connection, and Windows
+            // then discards the reply before the peer can read it. Wait for the peer to hang up first.
+            connection.drainUntilClosed(BUSY_DRAIN_TIMEOUT_MILLIS)
             // When both devices dial at once, the peer may reject the session this device kept,
             // so the dialler backs off and retries rather than assuming the other session syncs.
             if (outbound) throw PeerSessionBusyException()
@@ -433,6 +436,7 @@ class MeshRuntime(
         const val LOWER_ID_COLLISION_RETRY_MILLIS = 150L
         const val HIGHER_ID_COLLISION_RETRY_MILLIS = 750L
         const val MAX_COLLISION_BACKOFF_SHIFT = 5
+        const val BUSY_DRAIN_TIMEOUT_MILLIS = 2_000L
         const val PROPAGATION_COALESCE_MILLIS = 300L
         const val ROUTING_SETTLE_MILLIS = 750L
         const val ROUTING_FANOUT = 2
