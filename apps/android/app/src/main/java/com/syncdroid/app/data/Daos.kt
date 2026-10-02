@@ -275,7 +275,13 @@ interface SyncDao {
         insertSnapshotFiles(files)
         upsertFileVersions(currentFiles)
         upsertFolderIndexState(indexState)
+        // Only the latest snapshot is ever read; older ones held a full copy of the folder each.
+        deleteOlderSnapshots(snapshot.folderId, snapshot.snapshotId)
     }
+
+    /** Their files are removed by the cascading foreign key. */
+    @Query("DELETE FROM snapshots WHERE folderId = :folderId AND snapshotId != :keepSnapshotId")
+    suspend fun deleteOlderSnapshots(folderId: String, keepSnapshotId: String)
 
     @Query("SELECT * FROM snapshots WHERE folderId = :folderId ORDER BY createdAtMillis DESC LIMIT 1")
     suspend fun latestSnapshot(folderId: String): SnapshotEntity?
