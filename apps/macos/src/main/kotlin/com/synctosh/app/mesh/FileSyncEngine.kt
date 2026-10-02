@@ -183,54 +183,62 @@ class FileSyncEngine(
             require(store.folders(profile.groupId, identity.deviceId).any { it.folderId == update.folderId }) {
                 "Peer sent an index for another mesh"
             }
-            val localPaths = store.fileVersions(update.folderId).filterNot { it.deleted }.map { it.relativePath }
-            val root = configuredRoot(update.folderId)
-            val localSpellings = localPaths.groupBy { it.lowercase(java.util.Locale.ROOT) }
-            val aliases = update.files.any { file ->
-                localSpellings[file.relativePath.lowercase(java.util.Locale.ROOT)].orEmpty().any { localPath ->
-                    localPath != file.relativePath && root != null &&
-                        Files.exists(root.resolve(file.relativePath)) &&
-                        Files.isSameFile(root.resolve(localPath), root.resolve(file.relativePath))
-                }
-            }
-            require(!aliases) {
-                "File names differ only by capitalization. Rename the conflicting files to use the same spelling on every device before syncing."
-            }
+            val aliased = caseAliasedPaths(update.folderId, update.files.map { it.relativePath to it.deleted })
             require(store.acceptRemoteIndex(remoteDeviceId, update)) { "A full index is required" }
             val localByPath = store.fileVersions(update.folderId).associateBy(FileVersion::relativePath)
             update.files.map { it.toRemote(update.folderId, remoteDeviceId) }.forEach { remote ->
-                val local = localByPath[remote.relativePath]
-                val (action, reason) = if (
-                    !remote.deleted &&
-                    store.localActiveSyncException(remote.folderId, remote.relativePath, identity.deviceId)
-                ) {
-                    FileSyncAction.Nothing to "This device has an active overwrite-only exception"
-                } else {
-                    decideFileSync(local, remote)
-                }
-                if (action == FileSyncAction.Conflict) store.recordConflict(local, remote)
-                plans += FileSyncPlan(action, remote.relativePath, local, remote, reason, store.remoteBlockManifest(remote))
+                plans += planFor(localByPath[remote.relativePath], remote, aliased[remote.relativePath])
             }
         }
         val receivedKeys = plans.mapTo(mutableSetOf()) { it.key() }
         store.folders(profile.groupId, identity.deviceId).filter { pendingFolderIds == null || it.folderId in pendingFolderIds }.forEach { folder ->
-            store.pendingRemoteVersions(folder.folderId, remoteDeviceId).forEach { remote ->
-                val key = "${remote.folderId}\u0000${remote.relativePath}\u0000${remote.remoteSequence}"
-                if (key in receivedKeys) return@forEach
-                val local = store.fileVersion(folder.folderId, remote.relativePath)
-                val (action, reason) = if (
-                    !remote.deleted &&
-                    store.localActiveSyncException(remote.folderId, remote.relativePath, identity.deviceId)
-                ) {
-                    FileSyncAction.Nothing to "This device has an active overwrite-only exception"
-                } else {
-                    decideFileSync(local, remote)
-                }
-                if (action == FileSyncAction.Conflict) store.recordConflict(local, remote)
-                plans += FileSyncPlan(action, remote.relativePath, local, remote, reason, store.remoteBlockManifest(remote))
+            val pending = store.pendingRemoteVersions(folder.folderId, remoteDeviceId)
+                .filterNot { "${it.folderId}\u0000${it.relativePath}\u0000${it.remoteSequence}" in receivedKeys }
+            val aliased = caseAliasedPaths(folder.folderId, pending.map { it.relativePath to it.deleted })
+            pending.forEach { remote ->
+                plans += planFor(store.fileVersion(folder.folderId, remote.relativePath), remote, aliased[remote.relativePath])
             }
         }
         return plans.sortedWith(compareBy({ it.remote.folderId }, { it.remote.remoteSequence }))
+    }
+
+    private fun planFor(local: FileVersion?, remote: RemoteFileVersion, aliasReason: String?): FileSyncPlan {
+        val (action, reason) = when {
+            aliasReason != null -> FileSyncAction.Conflict to aliasReason
+            !remote.deleted && store.localActiveSyncException(remote.folderId, remote.relativePath, identity.deviceId) ->
+                FileSyncAction.Nothing to "This device has an active overwrite-only exception"
+            else -> decideFileSync(local, remote)
+        }
+        if (action == FileSyncAction.Conflict && reason != CASE_RENAME_PENDING_REASON) store.recordConflict(local, remote)
+        return FileSyncPlan(action, remote.relativePath, local, remote, reason, store.remoteBlockManifest(remote))
+    }
+
+    /**
+     * Incoming live paths this folder would store under another spelling: a case-insensitive disk
+     * already has a file or parent folder whose name differs only by capitalization. Writing them
+     * would record one name while the disk keeps the other, and the next scan would report a rename
+     * to every device. Each becomes a conflict for the user to rename, and other files keep syncing.
+     * Deletions are left out: they only ever affect the exact spelling indexed here. When the same
+     * changes also delete the clashing spelling, it is a rename: the new spelling waits one session
+     * for the old file to be removed instead of becoming a conflict.
+     */
+    private fun caseAliasedPaths(folderId: String, incoming: List<Pair<String, Boolean>>): Map<String, String> {
+        val root = configuredRoot(folderId) ?: return emptyMap()
+        val deletedPaths = incoming.filter { it.second }.mapTo(mutableSetOf()) { it.first }
+        val localSpellings = store.fileVersions(folderId).filterNot { it.deleted }.map { it.relativePath }
+            .groupBy { it.lowercase(java.util.Locale.ROOT) }
+        val aliased = linkedMapOf<String, String>()
+        incoming.filterNot { it.second }.forEach { (path) ->
+            val target = root.resolve(path)
+            val clashing = localSpellings[path.lowercase(java.util.Locale.ROOT)].orEmpty().filter { local ->
+                local != path && Files.exists(target) && Files.isSameFile(root.resolve(local), target)
+            }
+            when {
+                clashing.isNotEmpty() && clashing.all(deletedPaths::contains) -> aliased[path] = CASE_RENAME_PENDING_REASON
+                clashing.isNotEmpty() || parentSpelledDifferently(root, path) -> aliased[path] = CASE_ALIAS_REASON
+            }
+        }
+        return aliased
     }
 
     fun configuredRoot(folderId: String): Path? = store.configuredFolders(profile.groupId, identity.deviceId)
@@ -352,6 +360,26 @@ class FileSyncEngine(
     private companion object {
         const val MAX_INDEX_FILES = 50_000
     }
+}
+
+private const val CASE_ALIAS_REASON =
+    "File names differ only by capitalization. Rename one so every device uses the same spelling."
+private const val CASE_RENAME_PENDING_REASON = "Waiting for the previous capitalization to be removed"
+
+/** Whether an existing parent folder of [relativePath] is spelled differently on a case-insensitive disk. */
+internal fun parentSpelledDifferently(root: Path, relativePath: String): Boolean {
+    var current = root
+    for (component in relativePath.split('/').dropLast(1)) {
+        val next = current.resolve(component)
+        if (!Files.isDirectory(next)) return false
+        val wanted = java.text.Normalizer.normalize(component, java.text.Normalizer.Form.NFC)
+        val exact = Files.list(current).use { entries ->
+            entries.anyMatch { java.text.Normalizer.normalize(it.fileName.toString(), java.text.Normalizer.Form.NFC) == wanted }
+        }
+        if (!exact) return true
+        current = next
+    }
+    return false
 }
 
 private data class ScannedFile(val relativePath: String, val sizeBytes: Long, val modifiedAtMillis: Long, val sha256: String)

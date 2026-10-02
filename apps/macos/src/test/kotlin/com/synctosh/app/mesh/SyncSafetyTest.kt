@@ -6,7 +6,7 @@ import java.nio.file.Files
 import kotlin.test.*
 
 class SyncSafetyTest {
-    @Test fun caseVariantIsRejectedBeforeAcceptingIndex() {
+    @Test fun caseVariantBecomesAConflictWithoutTouchingTheLocalFile() {
         val dir = Files.createTempDirectory("review-case-")
         val identity = MacDeviceIdentity("review", dir.resolve("identity.p12"), legacyKeyStoreFactory = null)
         MeshStore(dir.resolve("mesh.db")).use { store ->
@@ -27,8 +27,8 @@ class SyncSafetyTest {
             val update = requireNotNull(engine.buildFullUpdate(folder.folderId))
             val remote = update.copy(files = update.files.map { it.copy(relativePath = "save.dat", contentSha256 = "a".repeat(64), version = VersionVector(mapOf("other" to 1)), originDeviceId = "other") })
             if (Files.exists(root.resolve("save.dat"))) {
-                assertFailsWith<IllegalArgumentException> { engine.receiveIndexes("other", listOf(remote)) }
-                assertNull(store.folderIndexState(folder.folderId, "other"))
+                assertEquals(FileSyncAction.Conflict, engine.receiveIndexes("other", listOf(remote)).single().action)
+                assertEquals(listOf("save.dat"), store.unresolvedConflicts().map { it.relativePath })
             } else {
                 // A case-sensitive volume can safely keep both distinct paths.
                 assertEquals(FileSyncAction.DownloadRemote, engine.receiveIndexes("other", listOf(remote)).single().action)

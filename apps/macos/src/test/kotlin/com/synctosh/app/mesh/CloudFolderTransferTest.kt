@@ -99,6 +99,42 @@ class CloudFolderTransferTest {
         }
     }
 
+    @Test fun capitalizationOnlyRenameReachesTheOtherDevice() = runBlocking {
+        Fixture().use { f ->
+            val id = f.folders.first().folderId
+            Files.writeString(f.rootsA.first().resolve("notes.txt"), "notes")
+            f.runA(id); f.runB(id)
+            val onB = f.rootsB.first().resolve("notes.txt")
+            Files.move(onB, onB.resolveSibling("rename-step"))
+            Files.move(onB.resolveSibling("rename-step"), onB.resolveSibling("Notes.txt"))
+
+            repeat(3) { f.runB(id); f.runA(id) }
+
+            val names = Files.list(f.rootsA.first()).use { paths -> paths.map { it.fileName.toString() }.toList() }
+            assertEquals(listOf("Notes.txt"), names.filter { it.equals("notes.txt", ignoreCase = true) })
+            assertEquals("notes", Files.readString(f.rootsA.first().resolve("Notes.txt")))
+            assertTrue(f.sa.unresolvedConflicts().isEmpty())
+        }
+    }
+
+    @Test fun folderSpelledDifferentlyOnACaseInsensitiveDiskBecomesAConflict() = runBlocking {
+        Fixture().use { f ->
+            val id = f.folders.first().folderId
+            Files.createDirectories(f.rootsA.first().resolve("photos"))
+            Files.writeString(f.rootsA.first().resolve("photos/a.jpg"), "a")
+            Files.writeString(f.rootsA.first().resolve("other.txt"), "other")
+            Files.createDirectories(f.rootsB.first().resolve("Photos"))
+            Files.writeString(f.rootsB.first().resolve("Photos/b.jpg"), "b")
+            val caseInsensitive = Files.isDirectory(f.rootsB.first().resolve("PHOTOS"))
+
+            f.runB(id); f.runA(id); f.runB(id)
+
+            assertEquals("other", Files.readString(f.rootsB.first().resolve("other.txt")))
+            assertEquals(caseInsensitive, f.sb.unresolvedConflicts().any { it.relativePath == "photos/a.jpg" })
+            assertEquals(caseInsensitive, f.sb.fileVersion(id, "photos/a.jpg") == null)
+        }
+    }
+
     @Test fun permanentDeletionRemovesRecoveryCopiesOnBothDevices() = runBlocking {
         Fixture().use { f ->
             val id = f.folders.first().folderId

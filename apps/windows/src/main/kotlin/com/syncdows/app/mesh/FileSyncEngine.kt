@@ -182,44 +182,66 @@ class FileSyncEngine(
         val plans = mutableListOf<FileSyncPlan>()
         updates.forEach { update ->
             validateFolderIndexUpdate(update)
-            val windowsPaths = mutableSetOf<String>()
-            update.files.forEach { file ->
-                val path = WindowsPathRules.validateRelativePath(file.relativePath)
-                require(windowsPaths.add(path.lowercase())) {
-                    "Index contains file names that collide on Windows"
-                }
-            }
             require(store.folders(profile.groupId, identity.deviceId).any { it.folderId == update.folderId }) {
                 "Peer sent an index for another mesh"
             }
-            val localPaths = store.fileVersions(update.folderId).filterNot { it.deleted }.map { it.relativePath }
-            val spellings = (localPaths + update.files.map { it.relativePath }).groupBy { it.lowercase(java.util.Locale.ROOT) }
-            require(spellings.values.none { it.distinct().size > 1 }) {
-                "File names differ only by capitalization. Rename the conflicting files to use the same spelling on every device before syncing."
-            }
+            val unsafe = unsafeIncomingPaths(update.folderId, update.files.map { it.relativePath to it.deleted })
             require(store.acceptRemoteIndex(remoteDeviceId, update)) { "A full index is required" }
             val localByPath = store.fileVersions(update.folderId).associateBy(FileVersion::relativePath)
             update.files.map { it.toRemote(update.folderId, remoteDeviceId) }.forEach { remote ->
                 val local = localByPath[remote.relativePath]
-                plans += planFor(local, remote)
+                plans += planFor(local, remote, unsafe[remote.relativePath])
             }
         }
         val receivedKeys = plans.mapTo(mutableSetOf()) { it.key() }
         store.folders(profile.groupId, identity.deviceId).filter { pendingFolderIds == null || it.folderId in pendingFolderIds }.forEach { folder ->
-            store.pendingRemoteVersions(folder.folderId, remoteDeviceId).forEach { remote ->
-                val key = "${remote.folderId}\u0000${remote.relativePath}\u0000${remote.remoteSequence}"
-                if (key in receivedKeys) return@forEach
+            val pending = store.pendingRemoteVersions(folder.folderId, remoteDeviceId)
+                .filterNot { "${it.folderId}\u0000${it.relativePath}\u0000${it.remoteSequence}" in receivedKeys }
+            val unsafe = unsafeIncomingPaths(folder.folderId, pending.map { it.relativePath to it.deleted })
+            pending.forEach { remote ->
                 val local = store.fileVersion(folder.folderId, remote.relativePath)
-                plans += planFor(local, remote)
+                plans += planFor(local, remote, unsafe[remote.relativePath])
             }
         }
         return plans.sortedWith(compareBy({ it.remote.folderId }, { it.remote.remoteSequence }))
     }
 
-    private fun planFor(local: FileVersion?, remote: RemoteFileVersion): FileSyncPlan {
+    /**
+     * Incoming live paths this PC cannot store under their own spelling: names Windows forbids,
+     * names differing only by capitalization from another incoming file, or from an existing file
+     * or parent folder. Each becomes a conflict for the user to rename, so one such file no longer
+     * stops every other file from syncing. Deletions only ever affect the exact spelling indexed here.
+     * When the same changes also delete the clashing local spelling, it is a rename: the new spelling
+     * waits one session for the old file to be removed instead of becoming a conflict.
+     */
+    private fun unsafeIncomingPaths(folderId: String, incoming: List<Pair<String, Boolean>>): Map<String, String> {
+        val livePaths = incoming.filterNot { it.second }.map { it.first }
+        val deletedPaths = incoming.filter { it.second }.mapTo(mutableSetOf()) { it.first }
+        val unsafe = linkedMapOf<String, String>()
+        livePaths.forEach { path ->
+            if (runCatching { WindowsPathRules.validateRelativePath(path) }.isFailure) unsafe[path] = INVALID_NAME_REASON
+        }
+        livePaths.filterNot(unsafe::containsKey).groupBy { it.lowercase(java.util.Locale.ROOT) }.values.forEach { spellings ->
+            spellings.distinct().sorted().drop(1).forEach { unsafe[it] = CASE_ALIAS_REASON }
+        }
+        val root = configuredRoot(folderId) ?: return unsafe
+        val localSpellings = store.fileVersions(folderId).filterNot { it.deleted }.map { it.relativePath }
+            .groupBy { it.lowercase(java.util.Locale.ROOT) }
+        livePaths.filterNot(unsafe::containsKey).forEach { path ->
+            val clashing = localSpellings[path.lowercase(java.util.Locale.ROOT)].orEmpty().filter { it != path }
+            when {
+                clashing.isNotEmpty() && clashing.all(deletedPaths::contains) -> unsafe[path] = CASE_RENAME_PENDING_REASON
+                clashing.isNotEmpty() || parentSpelledDifferently(root, path) -> unsafe[path] = CASE_ALIAS_REASON
+            }
+        }
+        return unsafe
+    }
+
+    private fun planFor(local: FileVersion?, remote: RemoteFileVersion, unsafeReason: String?): FileSyncPlan {
         val resolution = store.pendingConflictResolution(local, remote)
         val (action, reason) = when {
             resolution != null -> FileSyncAction.DownloadRemote to "Applying the selected conflict resolution"
+            unsafeReason != null -> FileSyncAction.Conflict to unsafeReason
             !remote.deleted && store.localActiveSyncException(
                 remote.folderId,
                 remote.relativePath,
@@ -228,7 +250,7 @@ class FileSyncEngine(
                 FileSyncAction.Nothing to "This device has an active overwrite-only exception"
             else -> decideFileSync(local, remote)
         }
-        if (action == FileSyncAction.Conflict) store.recordConflict(local, remote)
+        if (action == FileSyncAction.Conflict && reason != CASE_RENAME_PENDING_REASON) store.recordConflict(local, remote)
         return FileSyncPlan(
             action,
             resolution?.targetRelativePath ?: remote.relativePath,
@@ -359,6 +381,28 @@ class FileSyncEngine(
     private companion object {
         const val MAX_INDEX_FILES = 50_000
     }
+}
+
+private const val CASE_ALIAS_REASON =
+    "File names differ only by capitalization. Rename one so every device uses the same spelling."
+private const val CASE_RENAME_PENDING_REASON = "Waiting for the previous capitalization to be removed"
+private const val INVALID_NAME_REASON =
+    "Windows does not allow this file name. Rename it on the device that created it."
+
+/** Whether an existing parent folder of [relativePath] is spelled differently on a case-insensitive disk. */
+internal fun parentSpelledDifferently(root: Path, relativePath: String): Boolean {
+    var current = root
+    for (component in relativePath.split('/').dropLast(1)) {
+        val next = current.resolve(component)
+        if (!Files.isDirectory(next)) return false
+        val wanted = java.text.Normalizer.normalize(component, java.text.Normalizer.Form.NFC)
+        val exact = Files.list(current).use { entries ->
+            entries.anyMatch { java.text.Normalizer.normalize(it.fileName.toString(), java.text.Normalizer.Form.NFC) == wanted }
+        }
+        if (!exact) return true
+        current = next
+    }
+    return false
 }
 
 private data class ScannedFile(val relativePath: String, val sizeBytes: Long, val modifiedAtMillis: Long, val sha256: String)
