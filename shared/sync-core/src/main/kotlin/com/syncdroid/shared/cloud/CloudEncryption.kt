@@ -109,7 +109,20 @@ object CloudEncryptedObjects {
         }
     }
 
+    /**
+     * Large files use the chunked format: a single AES-GCM operation over a whole file makes the JDK,
+     * and Android's provider, hold all of it in memory to decrypt, and GCM caps one message at 64 GiB.
+     * Smaller files keep the single-operation format that older app versions can read.
+     */
     fun encryptFile(key: FolderKeyMaterial, fileId: String, contentSha256: String, source: Path, destination: Path) {
+        if (Files.size(source) >= CHUNKED_FILE_THRESHOLD_BYTES) {
+            encryptFileChunked(key, fileId, contentSha256, source, destination)
+        } else {
+            encryptFileWhole(key, fileId, contentSha256, source, destination)
+        }
+    }
+
+    private fun encryptFileWhole(key: FolderKeyMaterial, fileId: String, contentSha256: String, source: Path, destination: Path) {
         val nonce = ByteArray(NONCE_BYTES).also(SecureRandom()::nextBytes)
         Files.newOutputStream(destination).buffered().use { output ->
             output.write(FILE_MAGIC)
@@ -135,13 +148,119 @@ object CloudEncryptedObjects {
     ) {
         Files.newInputStream(source).buffered().use { input ->
             val header = java.io.DataInputStream(input)
-            require(ByteArray(FILE_MAGIC.size).also(header::readFully).contentEquals(FILE_MAGIC)) { "Invalid encrypted cloud file" }
+            val magic = ByteArray(FILE_MAGIC.size).also(header::readFully)
+            if (magic.contentEquals(CHUNKED_FILE_MAGIC)) {
+                decryptChunks(key, fileId, contentSha256, header, destination)
+                return
+            }
+            require(magic.contentEquals(FILE_MAGIC)) { "Invalid encrypted cloud file" }
             val nonce = ByteArray(NONCE_BYTES).also(header::readFully)
             val cipher = fileCipher(Cipher.DECRYPT_MODE, key, fileId, contentSha256, nonce)
             javax.crypto.CipherInputStream(input, cipher).use { decrypted ->
                 Files.newOutputStream(destination).buffered().use(decrypted::copyTo)
             }
         }
+    }
+
+    /**
+     * Chunked format: magic, an 8-byte random nonce prefix and the chunk size, then for each chunk a
+     * final-chunk flag, its length and its AES-GCM ciphertext. Each chunk's nonce ends with its index,
+     * and its associated data binds the index and flag, so chunks cannot be reordered, dropped or
+     * truncated without failing authentication.
+     */
+    internal fun encryptFileChunked(
+        key: FolderKeyMaterial,
+        fileId: String,
+        contentSha256: String,
+        source: Path,
+        destination: Path,
+        chunkBytes: Int = FILE_CHUNK_BYTES,
+    ) {
+        val noncePrefix = ByteArray(CHUNK_NONCE_PREFIX_BYTES).also(SecureRandom()::nextBytes)
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        Files.newOutputStream(destination).buffered().use { raw ->
+            val output = DataOutputStream(raw)
+            output.write(CHUNKED_FILE_MAGIC)
+            output.write(noncePrefix)
+            output.writeInt(chunkBytes)
+            java.security.DigestInputStream(Files.newInputStream(source).buffered(), digest).use { input ->
+                var current = ByteArray(chunkBytes)
+                var next = ByteArray(chunkBytes)
+                var currentSize = input.fill(current)
+                var index = 0
+                while (true) {
+                    val nextSize = if (currentSize < chunkBytes) 0 else input.fill(next)
+                    val last = nextSize == 0
+                    val ciphertext = chunkCipher(Cipher.ENCRYPT_MODE, key, fileId, contentSha256, noncePrefix, index, last)
+                        .doFinal(current, 0, currentSize)
+                    output.writeBoolean(last)
+                    output.writeInt(ciphertext.size)
+                    output.write(ciphertext)
+                    if (last) break
+                    current = next.also { next = current }
+                    currentSize = nextSize
+                    index++
+                }
+            }
+            output.flush()
+        }
+        val actualHash = digest.digest().joinToString("") { "%02x".format(it) }
+        require(actualHash.equals(contentSha256, true)) {
+            "File changed after scanning; cloud upload was cancelled. Sync again to upload the current version."
+        }
+    }
+
+    private fun decryptChunks(
+        key: FolderKeyMaterial,
+        fileId: String,
+        contentSha256: String,
+        input: java.io.DataInputStream,
+        destination: Path,
+    ) {
+        val noncePrefix = ByteArray(CHUNK_NONCE_PREFIX_BYTES).also(input::readFully)
+        val chunkBytes = input.readInt()
+        require(chunkBytes in 1..MAX_FILE_CHUNK_BYTES) { "Invalid encrypted cloud file" }
+        Files.newOutputStream(destination).buffered().use { output ->
+            var index = 0
+            while (true) {
+                val last = input.readBoolean()
+                val length = input.readInt()
+                require(length in TAG_BITS / 8..chunkBytes + TAG_BITS / 8) { "Invalid encrypted cloud file" }
+                val ciphertext = ByteArray(length).also(input::readFully)
+                output.write(chunkCipher(Cipher.DECRYPT_MODE, key, fileId, contentSha256, noncePrefix, index, last).doFinal(ciphertext))
+                if (last) break
+                index++
+            }
+            require(input.read() == -1) { "Encrypted cloud file has trailing data" }
+        }
+    }
+
+    private fun chunkCipher(
+        mode: Int,
+        key: FolderKeyMaterial,
+        fileId: String,
+        hash: String,
+        noncePrefix: ByteArray,
+        index: Int,
+        last: Boolean,
+    ) = Cipher.getInstance(TRANSFORMATION).apply {
+        val nonce = noncePrefix + java.nio.ByteBuffer.allocate(4).putInt(index).array()
+        init(mode, SecretKeySpec(key.bytes, "AES"), GCMParameterSpec(TAG_BITS, nonce))
+        updateAAD(
+            "syncdroid-cloud-v3\u0000${key.folderId}\u0000${key.keyId}\u0000file\u0000$fileId\u0000$hash\u0000$index\u0000$last"
+                .toByteArray(),
+        )
+    }
+
+    /** Reads until [buffer] is full or the stream ends, returning the bytes read. */
+    private fun java.io.InputStream.fill(buffer: ByteArray): Int {
+        var total = 0
+        while (total < buffer.size) {
+            val count = read(buffer, total, buffer.size - total)
+            if (count < 0) break
+            total += count
+        }
+        return total
     }
 
     private fun encryptBytes(key: FolderKeyMaterial, logicalId: String, plaintext: ByteArray): ByteArray {
@@ -181,6 +300,11 @@ object CloudEncryptedObjects {
 
     private val BYTE_MAGIC = byteArrayOf(0x53, 0x44, 0x43, 0x32)
     private val FILE_MAGIC = byteArrayOf(0x53, 0x44, 0x46, 0x32)
+    private val CHUNKED_FILE_MAGIC = byteArrayOf(0x53, 0x44, 0x46, 0x33)
+    private const val CHUNKED_FILE_THRESHOLD_BYTES = 16L * 1024 * 1024
+    private const val FILE_CHUNK_BYTES = 1024 * 1024
+    private const val MAX_FILE_CHUNK_BYTES = 16 * 1024 * 1024
+    private const val CHUNK_NONCE_PREFIX_BYTES = 8
     private const val MANIFEST_MAGIC = 0x5344434D
     private const val MANIFEST_VERSION = 2
     private const val MAX_MANIFEST_BYTES = 64 * 1024 * 1024

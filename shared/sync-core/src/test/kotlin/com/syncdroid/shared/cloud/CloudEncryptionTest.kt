@@ -42,4 +42,50 @@ class CloudEncryptionTest {
             directory.toFile().deleteRecursively()
         }
     }
+
+    @Test
+    fun chunkedFilesRoundTripAndRejectTampering() {
+        val directory = Files.createTempDirectory("cloud-chunked-test")
+        try {
+            val content = ByteArray(3_500) { (it * 7).toByte() }
+            val source = directory.resolve("source").also { Files.write(it, content) }
+            val hash = java.security.MessageDigest.getInstance("SHA-256").digest(content).joinToString("") { "%02x".format(it) }
+            val encrypted = directory.resolve("encrypted")
+            val restored = directory.resolve("restored")
+            CloudEncryptedObjects.encryptFileChunked(key, "file", hash, source, encrypted, chunkBytes = 1_000)
+
+            CloudEncryptedObjects.decryptFile(key, "file", hash, encrypted, restored)
+            assertContentEquals(content, Files.readAllBytes(restored))
+
+            // Dropping the final chunk must not decrypt as a shorter file.
+            val bytes = Files.readAllBytes(encrypted)
+            val lastChunk = 1 + 4 + (500 + 16)
+            Files.write(encrypted, bytes.copyOf(bytes.size - lastChunk))
+            assertFailsWith<Exception> { CloudEncryptedObjects.decryptFile(key, "file", hash, encrypted, restored) }
+
+            // Marking an earlier chunk as final fails authentication too.
+            val flagged = bytes.copyOf().also { it[4 + 8 + 4] = 1 }
+            Files.write(encrypted, flagged)
+            assertFailsWith<Exception> { CloudEncryptedObjects.decryptFile(key, "file", hash, encrypted, restored) }
+        } finally {
+            directory.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun chunkedFileWithAnExactMultipleOfTheChunkSizeEndsWithAnEmptyFinalChunk() {
+        val directory = Files.createTempDirectory("cloud-chunked-exact-test")
+        try {
+            val content = ByteArray(2_000) { it.toByte() }
+            val source = directory.resolve("source").also { Files.write(it, content) }
+            val hash = java.security.MessageDigest.getInstance("SHA-256").digest(content).joinToString("") { "%02x".format(it) }
+            val encrypted = directory.resolve("encrypted")
+            val restored = directory.resolve("restored")
+            CloudEncryptedObjects.encryptFileChunked(key, "file", hash, source, encrypted, chunkBytes = 1_000)
+            CloudEncryptedObjects.decryptFile(key, "file", hash, encrypted, restored)
+            assertContentEquals(content, Files.readAllBytes(restored))
+        } finally {
+            directory.toFile().deleteRecursively()
+        }
+    }
 }
