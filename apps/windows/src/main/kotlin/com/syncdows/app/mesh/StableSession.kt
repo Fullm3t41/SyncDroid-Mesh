@@ -264,6 +264,7 @@ class MeshFileSyncSession(
         }
         attachmentDownloads.forEach { message ->
             runCatching { chatAttachments.receive(connection, message, onIncomingBytes) }
+                .onFailure { if (it is CancellationException) throw it }
         }
         return appliedChangeCount
     }

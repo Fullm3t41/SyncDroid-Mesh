@@ -85,16 +85,20 @@ class ChatAttachmentStore(
             val digest = MessageDigest.getInstance("SHA-256")
             var received = 0L
             var expectedSequence = 0
+            var problem: String? = null
             FileOutputStream(temporary.toFile()).use { output ->
+                // Read to the end of an invalid transfer too, so the session's later messages stay in step.
                 while (true) when (val response = FileTransferWireCodec.decode(connection.receive())) {
                     is FileTransferMessage.FileChunk -> {
-                        require(response.sequence == expectedSequence++) { "Attachment chunks arrived out of order" }
+                        if (response.sequence != expectedSequence++) problem = problem ?: "Attachment chunks arrived out of order"
                         received += response.data.size
-                        require(received <= attachment.sizeBytes) { "Peer sent too much attachment data" }
-                        output.write(response.data); digest.update(response.data); onBytes(response.data.size.toLong())
+                        if (received > attachment.sizeBytes) problem = problem ?: "Peer sent too much attachment data"
+                        if (problem == null) {
+                            output.write(response.data); digest.update(response.data); onBytes(response.data.size.toLong())
+                        }
                     }
                     is FileTransferMessage.FileEnd -> {
-                        require(response.contentSha256.equals(attachment.contentSha256, true))
+                        if (!response.contentSha256.equals(attachment.contentSha256, true)) problem = problem ?: "Peer sent a different attachment"
                         break
                     }
                     is FileTransferMessage.Error -> error(response.reason)
@@ -102,6 +106,7 @@ class ChatAttachmentStore(
                 }
                 output.fd.sync()
             }
+            problem?.let(::error)
             require(received == attachment.sizeBytes && digest.digest().toHex().equals(attachment.contentSha256, true)) {
                 "Received attachment does not match its signed metadata"
             }
@@ -123,17 +128,22 @@ class ChatAttachmentStore(
             connection.send(FileTransferWireCodec.encode(FileTransferMessage.Error("Requested chat attachment is unavailable")))
             return
         }
+        // The cached copy can change after it was shared; never send other content than the message describes.
+        if (Files.size(source) != attachment.sizeBytes) {
+            connection.send(FileTransferWireCodec.encode(FileTransferMessage.Error("Requested chat attachment is unavailable")))
+            return
+        }
         connection.send(FileTransferWireCodec.encode(FileTransferMessage.FileStart(attachment.sizeBytes, message.createdAtMillis)))
         Files.newInputStream(source).buffered().use { input ->
             val buffer = ByteArray(CHUNK_SIZE)
             var sequence = 0
+            var sent = 0L
             while (true) {
-                val count = input.read(buffer)
-                if (count < 0) break
-                if (count > 0) {
-                    connection.send(FileTransferWireCodec.encode(FileTransferMessage.FileChunk(sequence++, buffer.copyOf(count))))
-                    onBytes(count.toLong())
-                }
+                val count = input.read(buffer, 0, minOf(buffer.size.toLong(), attachment.sizeBytes - sent).toInt())
+                if (count <= 0) break
+                sent += count
+                connection.send(FileTransferWireCodec.encode(FileTransferMessage.FileChunk(sequence++, buffer.copyOf(count))))
+                onBytes(count.toLong())
             }
         }
         connection.send(FileTransferWireCodec.encode(FileTransferMessage.FileEnd(attachment.contentSha256)))
