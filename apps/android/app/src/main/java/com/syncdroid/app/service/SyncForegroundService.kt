@@ -458,7 +458,7 @@ class SyncForegroundService : Service() {
     }
 
     private fun clearStorageWarning() {
-        SyncServiceController.report(storageWarning = null)
+        SyncServiceController.report(clearStorageWarning = true)
         eventNotifications.clearStorageWarning()
     }
 
