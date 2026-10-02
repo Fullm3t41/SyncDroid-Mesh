@@ -139,7 +139,11 @@ class ResumableBlockPeerClient(
     private val receiver: ResumableBlockReceiver,
     private val onBytesTransferred: (Long) -> Unit = {},
 ) {
-    suspend fun fetchMissing(connection: AuthenticatedPeerConnection, manifest: BlockManifest): Boolean {
+    suspend fun fetchMissing(
+        connection: AuthenticatedPeerConnection,
+        manifest: BlockManifest,
+        requestRelativePath: String = manifest.relativePath,
+    ): Boolean {
         val missing = receiver.missingBlocks(manifest)
         if (missing.isEmpty()) return true
         for (index in missing) {
@@ -148,7 +152,7 @@ class ResumableBlockPeerClient(
                     FileTransferMessage.BlockRequest(
                         manifest.folderId,
                         manifest.fileId,
-                        manifest.relativePath,
+                        requestRelativePath,
                         manifest.contentSha256,
                         index,
                     ),

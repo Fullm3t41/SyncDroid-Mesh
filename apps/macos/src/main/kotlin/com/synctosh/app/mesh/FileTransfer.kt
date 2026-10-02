@@ -109,6 +109,7 @@ class WholeFilePeerClient(
         connection: AuthenticatedPeerConnection,
         request: FileTransferMessage.WholeFileRequest,
         applier: AtomicFileApplier,
+        targetRelativePath: String = request.relativePath,
     ) {
         connection.send(FileTransferWireCodec.encode(request))
         val start = FileTransferWireCodec.decode(connection.receive())
@@ -141,7 +142,7 @@ class WholeFilePeerClient(
             }
             require(received == start.sizeBytes) { "Received file size does not match its manifest" }
             FileInputStream(temporary.toFile()).buffered().use { input ->
-                applier.apply(request.relativePath, input, request.contentSha256, start.modifiedAtMillis)
+                applier.apply(targetRelativePath, input, request.contentSha256, start.modifiedAtMillis)
             }
         } finally {
             Files.deleteIfExists(temporary)

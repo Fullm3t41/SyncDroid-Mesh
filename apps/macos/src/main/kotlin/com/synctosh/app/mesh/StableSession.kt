@@ -121,7 +121,7 @@ class MeshFileSyncSession(
         }
         val prepared = plans.map { plan ->
             val root = engine.configuredRoot(plan.remote.folderId)
-            val manifest = plan.remoteManifest.takeIf {
+            val manifest = plan.remoteManifest?.copy(relativePath = plan.relativePath).takeIf {
                 plan.action == FileSyncAction.DownloadRemote && !plan.remote.deleted && root != null
             }
             val missingBlocks = manifest?.let {
@@ -212,7 +212,7 @@ class MeshFileSyncSession(
                         return@forEach
                     }
                     val applier = AtomicFileApplier(root, plan.expectedContent())
-                    val localBefore = store.fileVersion(folderId, plan.relativePath)
+                    val localBefore = store.fileVersion(folderId, plan.remote.relativePath)
                     if (plan.remote.deleted) {
                         if (plan.remote.purgeRecovery) {
                             applier.delete(plan.relativePath)
@@ -231,7 +231,7 @@ class MeshFileSyncSession(
                             val completed = ResumableBlockPeerClient(
                                 ResumableBlockReceiver(store, transferCache(), applier),
                                 onIncomingBytes,
-                            ).fetchMissing(connection, prepared.manifest)
+                            ).fetchMissing(connection, prepared.manifest, plan.remote.relativePath)
                             require(completed) { "Resumable transfer did not receive every block" }
                         }
                     } else {
@@ -244,12 +244,17 @@ class MeshFileSyncSession(
                                 plan.remote.contentSha256,
                             ),
                             applier,
+                            plan.relativePath,
                         )
                     }
-                    engine.markRemoteApplied(remoteDeviceId, plan.remote, folderId !in acknowledgementBlocked)
+                    if (plan.conflictResolution != null) {
+                        store.finalizeConflictResolution(plan.conflictResolution, plan.remote, identity.deviceId)
+                    } else {
+                        engine.markRemoteApplied(remoteDeviceId, plan.remote, folderId !in acknowledgementBlocked)
+                    }
                     appliedChangeCount++
                     if (!plan.remote.deleted) {
-                        history.recordSynced(plan.remote)
+                        history.recordSynced(plan.remote.copy(relativePath = plan.relativePath))
                         store.fileVersion(folderId, plan.relativePath)?.let { store.noteFileSynced(it) }
                     }
                 }

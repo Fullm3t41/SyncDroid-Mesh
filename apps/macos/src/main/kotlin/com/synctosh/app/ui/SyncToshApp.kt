@@ -48,7 +48,7 @@ import com.syncdroid.shared.update.ReleaseUpdateService
 import com.syncdroid.shared.update.UpdateState
 import kotlinx.coroutines.launch
 
-private enum class SecondaryScreen { CloudSync, BackgroundOperation, PowerDiscovery, FileHistory }
+private enum class SecondaryScreen { CloudSync, BackgroundOperation, PowerDiscovery, FileHistory, Conflicts }
 
 @Composable
 fun SyncToshApp(
@@ -201,6 +201,19 @@ fun SyncToshApp(
                             onRecover = { runtime.recoverFile(it.eventId) },
                             onBack = { secondaryScreen = null },
                         )
+                        SecondaryScreen.Conflicts -> ConflictReviewScreen(
+                            conflicts = meshState.conflicts,
+                            folders = meshState.folders,
+                            deviceNames = buildMap {
+                                put(meshState.localDeviceId, deviceName)
+                                meshState.peers.forEach { put(it.deviceId, it.name) }
+                            },
+                            busy = meshState.busy,
+                            onKeepLocal = { runtime.keepLocalConflict(it.conflict.conflictId) },
+                            onKeepRemote = { runtime.keepRemoteConflict(it.conflict.conflictId) },
+                            onKeepBoth = { runtime.keepBothConflict(it.conflict.conflictId) },
+                            onBack = { secondaryScreen = null },
+                        )
                         null -> when (selectedSection) {
                             MainSection.Sync -> SyncScreen(
                                 deviceName = deviceName,
@@ -327,6 +340,8 @@ fun SyncToshApp(
                                 },
                                 onOpenPowerSettings = { secondaryScreen = SecondaryScreen.PowerDiscovery },
                                 onOpenFileHistory = { secondaryScreen = SecondaryScreen.FileHistory },
+                                conflictCount = meshState.conflicts.size,
+                                onOpenConflicts = { secondaryScreen = SecondaryScreen.Conflicts },
                                 cloudScope = cloudPolicy.scope,
                                 onOpenCloudSettings = { secondaryScreen = SecondaryScreen.CloudSync },
                                 launchAtLogin = launchAtLogin,

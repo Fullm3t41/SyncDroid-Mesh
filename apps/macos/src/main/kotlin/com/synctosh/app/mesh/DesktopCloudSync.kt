@@ -181,7 +181,9 @@ internal class DesktopCloudFolderTransfer(
                                 transferredBytes = result.transferredBytes + plan.remote.sizeBytes,
                             )
                         }
-                        engine.markRemoteApplied(publisherId, plan.remote, acknowledge = !acknowledgementBlocked)
+                        if (plan.conflictResolution != null) {
+                            store.finalizeConflictResolution(plan.conflictResolution, plan.remote, identity.deviceId)
+                        } else engine.markRemoteApplied(publisherId, plan.remote, acknowledge = !acknowledgementBlocked)
                     }
                 }
             }

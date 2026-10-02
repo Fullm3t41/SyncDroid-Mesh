@@ -29,6 +29,7 @@ data class FileSyncPlan(
     val remote: RemoteFileVersion,
     val reason: String,
     val remoteManifest: BlockManifest?,
+    val conflictResolution: PendingConflictResolution? = null,
 )
 
 internal fun FileSyncPlan.expectedContent() = com.syncdroid.shared.sync.ExpectedFileContent(
@@ -221,14 +222,24 @@ class FileSyncEngine(
     }
 
     private fun planFor(local: FileVersion?, remote: RemoteFileVersion, aliasReason: String?): FileSyncPlan {
+        val resolution = store.pendingConflictResolution(local, remote)
         val (action, reason) = when {
+            resolution != null -> FileSyncAction.DownloadRemote to "Applying the selected conflict resolution"
             aliasReason != null -> FileSyncAction.Conflict to aliasReason
             !remote.deleted && store.localActiveSyncException(remote.folderId, remote.relativePath, identity.deviceId) ->
                 FileSyncAction.Nothing to "This device has an active overwrite-only exception"
             else -> decideFileSync(local, remote)
         }
         if (action == FileSyncAction.Conflict && reason != CASE_RENAME_PENDING_REASON) store.recordConflict(local, remote)
-        return FileSyncPlan(action, remote.relativePath, local, remote, reason, store.remoteBlockManifest(remote))
+        return FileSyncPlan(
+            action,
+            resolution?.targetRelativePath ?: remote.relativePath,
+            local,
+            remote,
+            reason,
+            store.remoteBlockManifest(remote),
+            resolution,
+        )
     }
 
     /**

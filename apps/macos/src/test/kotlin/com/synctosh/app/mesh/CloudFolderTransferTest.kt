@@ -218,7 +218,7 @@ class CloudFolderTransferTest {
         }
     }
 
-    @Test fun devicesExchangeFilesAndPreserveConflictingVersionsThroughCloudOnly() = runBlocking {
+    @Test fun devicesExchangeFilesAndResolveConflictsThroughCloudOnly() = runBlocking {
         Fixture().use { f ->
             val id = f.folders.first().folderId
             val a = f.rootsA.first().resolve("save.dat")
@@ -232,11 +232,16 @@ class CloudFolderTransferTest {
             Files.writeString(a, "A conflict")
             Files.writeString(b, "B conflict")
             f.runA(id); f.runB(id)
-            assertEquals(1, f.sb.unresolvedConflicts().size)
+            val conflict = f.sb.unresolvedConflictReviews().single()
+            val target = f.sb.queueConflictResolution(conflict.conflict.conflictId, ConflictResolutionAction.KEEP_BOTH, f.b.deviceId)
+            f.runB(id)
             assertEquals("B conflict", Files.readString(b))
+            assertEquals("A conflict", Files.readString(f.rootsB.first().resolve(target)))
+            assertTrue(f.sb.unresolvedConflictReviews().isEmpty())
+            assertEquals(sha256Hex("B conflict".byteInputStream()), f.sb.fileVersion(id, "save.dat")!!.contentSha256)
+            assertNotNull(f.sb.fileVersion(id, target))
             f.runA(id)
-            assertEquals("A conflict", Files.readString(a))
-            assertEquals(1, f.sa.unresolvedConflicts().size)
+            assertTrue(f.sa.unresolvedConflictReviews().isEmpty())
         }
     }
 

@@ -112,6 +112,20 @@ data class FileConflict(
     val createdAtMillis: Long,
 )
 
+enum class ConflictResolutionAction { KEEP_REMOTE, KEEP_BOTH }
+
+data class FileConflictReview(
+    val conflict: FileConflict,
+    val local: FileVersion?,
+    val remote: RemoteFileVersion,
+)
+
+data class PendingConflictResolution(
+    val conflictId: String,
+    val action: ConflictResolutionAction,
+    val targetRelativePath: String,
+)
+
 enum class FileHistoryAction { ADDED, UPDATED, SYNCED, DELETED, RECOVERED }
 
 data class FileHistoryEvent(
@@ -799,9 +813,188 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
     @Synchronized
     fun unresolvedConflicts(): List<FileConflict> = connection.prepareStatement(
         """SELECT conflict_id, folder_id, relative_path, local_hash, remote_device_id, remote_hash, created_at_millis
-           FROM file_conflicts ORDER BY created_at_millis DESC""",
+           FROM file_conflicts AS c
+           WHERE NOT EXISTS (SELECT 1 FROM conflict_resolutions AS r WHERE r.conflict_id = c.conflict_id)
+           ORDER BY created_at_millis DESC""",
     ).use { statement ->
         statement.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.fileConflict()) } }
+    }
+
+    @Synchronized
+    fun unresolvedConflictReviews(): List<FileConflictReview> = unresolvedConflicts().mapNotNull { conflict ->
+        val remote = remoteFileVersion(
+            conflict.folderId,
+            conflict.remoteDeviceId,
+            conflict.relativePath,
+            conflict.remoteHash,
+        ) ?: return@mapNotNull null
+        FileConflictReview(conflict, fileVersion(conflict.folderId, conflict.relativePath), remote)
+    }
+
+    @Synchronized
+    fun resolveConflictKeepLocal(
+        conflictId: String,
+        localDeviceId: String,
+        nowMillis: Long = System.currentTimeMillis(),
+    ) = transaction {
+        val review = requireNotNull(conflictReview(conflictId)) { "This conflict is no longer available" }
+        val local = requireNotNull(review.local) { "The local file version is no longer available" }
+        val state = folderIndexState(local.folderId, localDeviceId) ?: FolderIndexState(
+            local.folderId, localDeviceId, randomIndexEpoch(), 0, 0, 0, nowMillis,
+        )
+        val nextSequence = state.maxSequence + 1
+        upsertFileVersionLocked(
+            local.copy(
+                version = local.version.merge(review.remote.version).increment(localDeviceId),
+                originDeviceId = localDeviceId,
+                localSequence = nextSequence,
+            ),
+        )
+        upsertFolderIndexStateLocked(
+            state.copy(
+                maxSequence = nextSequence,
+                metadataReceivedSequence = nextSequence,
+                contentAppliedSequence = nextSequence,
+                updatedAtMillis = nowMillis,
+            ),
+        )
+        acknowledgeRemoteSequenceLocked(review.remote, nowMillis)
+        clearConflictsLocked(local.folderId, local.relativePath)
+    }
+
+    @Synchronized
+    fun queueConflictResolution(
+        conflictId: String,
+        action: ConflictResolutionAction,
+        localDeviceId: String,
+        nowMillis: Long = System.currentTimeMillis(),
+    ): String = transaction {
+        val review = requireNotNull(conflictReview(conflictId)) { "This conflict is no longer available" }
+        val target = when (action) {
+            ConflictResolutionAction.KEEP_REMOTE -> review.conflict.relativePath
+            ConflictResolutionAction.KEEP_BOTH -> nextAvailableConflictPath(
+                review.conflict.folderId,
+                review.conflict.relativePath,
+                localDeviceId,
+            )
+        }
+        connection.prepareStatement(
+            """INSERT INTO conflict_resolutions(conflict_id, action, target_relative_path, created_at_millis)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(conflict_id) DO UPDATE SET
+                 action = excluded.action,
+                 target_relative_path = excluded.target_relative_path,
+                 created_at_millis = excluded.created_at_millis""",
+        ).use {
+            it.setString(1, conflictId)
+            it.setString(2, action.name)
+            it.setString(3, target)
+            it.setLong(4, nowMillis)
+            it.executeUpdate()
+        }
+        target
+    }
+
+    @Synchronized
+    fun pendingConflictResolution(
+        local: FileVersion?,
+        remote: RemoteFileVersion,
+    ): PendingConflictResolution? = connection.prepareStatement(
+        """SELECT c.conflict_id, r.action, r.target_relative_path
+           FROM file_conflicts AS c
+           JOIN conflict_resolutions AS r ON r.conflict_id = c.conflict_id
+           WHERE c.folder_id = ? AND c.relative_path = ? AND c.remote_device_id = ?
+             AND c.remote_hash = ? AND COALESCE(c.local_hash, '') = ?
+           LIMIT 1""",
+    ).use { statement ->
+        statement.setString(1, remote.folderId)
+        statement.setString(2, remote.relativePath)
+        statement.setString(3, remote.deviceId)
+        statement.setString(4, remote.contentSha256)
+        statement.setString(5, local?.contentSha256.orEmpty())
+        statement.executeQuery().use { rows ->
+            if (!rows.next()) null else PendingConflictResolution(
+                rows.getString(1),
+                ConflictResolutionAction.valueOf(rows.getString(2)),
+                rows.getString(3),
+            )
+        }
+    }
+
+    @Synchronized
+    fun finalizeConflictResolution(
+        resolution: PendingConflictResolution,
+        remote: RemoteFileVersion,
+        localDeviceId: String,
+        nowMillis: Long = System.currentTimeMillis(),
+    ) = transaction {
+        val review = requireNotNull(conflictReview(resolution.conflictId)) { "Conflict resolution is no longer available" }
+        val local = requireNotNull(review.local) { "The local conflict version is no longer available" }
+        require(review.remote.contentSha256.equals(remote.contentSha256, true)) { "The remote conflict version changed" }
+        val state = folderIndexState(remote.folderId, localDeviceId) ?: FolderIndexState(
+            remote.folderId, localDeviceId, randomIndexEpoch(), 0, 0, 0, nowMillis,
+        )
+        var sequence = state.maxSequence
+        val resolvedVector = local.version.merge(remote.version).increment(localDeviceId)
+        when (resolution.action) {
+            ConflictResolutionAction.KEEP_REMOTE -> {
+                sequence++
+                upsertFileVersionLocked(
+                    FileVersion(
+                        remote.folderId,
+                        remote.relativePath,
+                        remote.fileId,
+                        remote.sizeBytes,
+                        remote.modifiedAtMillis,
+                        remote.contentSha256,
+                        local.contentSha256.takeIf(String::isNotBlank),
+                        remote.deleted,
+                        resolvedVector,
+                        remote.originDeviceId.ifBlank { remote.deviceId },
+                        sequence,
+                        remote.purgeRecovery,
+                    ),
+                )
+            }
+            ConflictResolutionAction.KEEP_BOTH -> {
+                require(!remote.deleted) { "A deleted file cannot be kept as a renamed copy" }
+                sequence++
+                upsertFileVersionLocked(
+                    local.copy(
+                        version = resolvedVector,
+                        originDeviceId = localDeviceId,
+                        localSequence = sequence,
+                    ),
+                )
+                sequence++
+                upsertFileVersionLocked(
+                    FileVersion(
+                        remote.folderId,
+                        resolution.targetRelativePath,
+                        UUID.randomUUID().toString(),
+                        remote.sizeBytes,
+                        remote.modifiedAtMillis,
+                        remote.contentSha256,
+                        null,
+                        false,
+                        remote.version.increment(localDeviceId),
+                        remote.originDeviceId.ifBlank { remote.deviceId },
+                        sequence,
+                        remote.purgeRecovery,
+                    ),
+                )
+            }
+        }
+        upsertFolderIndexStateLocked(
+            state.copy(
+                maxSequence = sequence,
+                metadataReceivedSequence = sequence,
+                contentAppliedSequence = sequence,
+                updatedAtMillis = nowMillis,
+            ),
+        )
+        acknowledgeRemoteSequenceLocked(remote, nowMillis)
+        clearConflictsLocked(remote.folderId, remote.relativePath)
     }
 
     @Synchronized
@@ -1128,6 +1321,91 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
             statement.executeQuery().use { rows -> if (rows.next()) rows.syncExceptionState() else null }
         }
 
+    private fun conflictReview(conflictId: String): FileConflictReview? = connection.prepareStatement(
+        """SELECT conflict_id, folder_id, relative_path, local_hash, remote_device_id, remote_hash, created_at_millis
+           FROM file_conflicts WHERE conflict_id = ? LIMIT 1""",
+    ).use { statement ->
+        statement.setString(1, conflictId)
+        statement.executeQuery().use { rows ->
+            if (!rows.next()) return@use null
+            val conflict = rows.fileConflict()
+            val remote = remoteFileVersion(
+                conflict.folderId,
+                conflict.remoteDeviceId,
+                conflict.relativePath,
+                conflict.remoteHash,
+            ) ?: return@use null
+            FileConflictReview(conflict, fileVersion(conflict.folderId, conflict.relativePath), remote)
+        }
+    }
+
+    private fun remoteFileVersion(
+        folderId: String,
+        deviceId: String,
+        relativePath: String,
+        contentSha256: String,
+    ): RemoteFileVersion? = connection.prepareStatement(
+        """SELECT folder_id, device_id, relative_path, file_id, size_bytes, modified_at_millis,
+                  content_sha256, previous_content_sha256, origin_device_id, deleted, version_json, remote_sequence, purge_recovery
+           FROM remote_file_versions
+           WHERE folder_id = ? AND device_id = ? AND relative_path = ? AND content_sha256 = ? LIMIT 1""",
+    ).use { statement ->
+        statement.setString(1, folderId)
+        statement.setString(2, deviceId)
+        statement.setString(3, relativePath)
+        statement.setString(4, contentSha256)
+        statement.executeQuery().use { rows -> if (rows.next()) rows.remoteFileVersion() else null }
+    }
+
+    private fun nextAvailableConflictPath(folderId: String, relativePath: String, localDeviceId: String): String {
+        val normalized = normalizedRelativePath(relativePath)
+        val parent = normalized.substringBeforeLast('/', "")
+        val fileName = normalized.substringAfterLast('/')
+        val dot = fileName.lastIndexOf('.').takeIf { it > 0 } ?: fileName.length
+        val stem = fileName.substring(0, dot)
+        val extension = fileName.substring(dot)
+        val known = fileVersions(folderId).mapTo(mutableSetOf()) { it.relativePath.lowercase() }
+        val root = configuredFolders(requireNotNull(profile()).groupId, localDeviceId)
+            .firstOrNull { it.folderId == folderId }
+            ?.localPath
+            ?.let(Path::of)
+        for (suffix in 1..9_999) {
+            val child = "${stem}_$suffix$extension"
+            val candidate = normalizedRelativePath(if (parent.isEmpty()) child else "$parent/$child")
+            if (candidate.lowercase() in known) continue
+            if (root != null && Files.exists(root.resolve(candidate))) continue
+            return candidate
+        }
+        error("Could not find an available name for the second conflict copy")
+    }
+
+    private fun acknowledgeRemoteSequenceLocked(remote: RemoteFileVersion, nowMillis: Long) {
+        val remoteState = requireNotNull(folderIndexState(remote.folderId, remote.deviceId)) {
+            "Unknown remote folder index"
+        }
+        upsertFolderIndexStateLocked(
+            remoteState.copy(
+                contentAppliedSequence = maxOf(remoteState.contentAppliedSequence, remote.remoteSequence),
+                updatedAtMillis = nowMillis,
+            ),
+        )
+    }
+
+    private fun clearConflictsLocked(folderId: String, relativePath: String) {
+        connection.prepareStatement(
+            "DELETE FROM conflict_resolutions WHERE conflict_id IN (SELECT conflict_id FROM file_conflicts WHERE folder_id = ? AND relative_path = ?)",
+        ).use {
+            it.setString(1, folderId)
+            it.setString(2, relativePath)
+            it.executeUpdate()
+        }
+        connection.prepareStatement("DELETE FROM file_conflicts WHERE folder_id = ? AND relative_path = ?").use {
+            it.setString(1, folderId)
+            it.setString(2, relativePath)
+            it.executeUpdate()
+        }
+    }
+
     private fun upsertBinding(
         folderId: String,
         deviceId: String,
@@ -1359,6 +1637,11 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
                     conflict_id TEXT PRIMARY KEY, folder_id TEXT NOT NULL, relative_path TEXT NOT NULL,
                     local_hash TEXT, remote_device_id TEXT NOT NULL, remote_hash TEXT NOT NULL,
                     created_at_millis INTEGER NOT NULL)""",
+            )
+            statement.executeUpdate(
+                """CREATE TABLE IF NOT EXISTS conflict_resolutions(
+                    conflict_id TEXT PRIMARY KEY, action TEXT NOT NULL,
+                    target_relative_path TEXT NOT NULL, created_at_millis INTEGER NOT NULL)""",
             )
             statement.executeUpdate(
                 """CREATE TABLE IF NOT EXISTS file_history(
