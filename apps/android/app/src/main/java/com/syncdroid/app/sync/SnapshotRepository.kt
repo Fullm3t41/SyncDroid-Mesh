@@ -3,6 +3,7 @@ package com.syncdroid.app.sync
 import com.syncdroid.shared.sync.isSyncIgnoredPath
 import android.content.Context
 import android.net.Uri
+import androidx.room.withTransaction
 import com.syncdroid.app.data.FileVersionEntity
 import com.syncdroid.app.data.FolderIndexStateEntity
 import com.syncdroid.app.data.SnapshotEntity
@@ -18,7 +19,7 @@ import java.security.SecureRandom
 import java.util.UUID
 
 class SnapshotRepository(
-    database: SyncDroidDatabase,
+    private val database: SyncDroidDatabase,
     signer: DeviceSigner,
     private val scanner: DirectFolderScanner = DirectFolderScanner(),
     private val epochSource: () -> Long = ::randomIndexEpoch,
@@ -34,10 +35,11 @@ class SnapshotRepository(
         rules: SyncFilterRules,
         nowMillis: Long = System.currentTimeMillis(),
     ): SnapshotManifest? {
+        val baseline = syncDao.folderIndexState(folderId, originDeviceId)?.maxSequence
         val localExceptions = exceptionRepository.locallyActivePaths(folderId, originDeviceId)
         val presentPaths = scanner.listRelativeFilePaths(rootDirectory)
         val scannedFiles = scanner.scan(rootDirectory, rules, localExceptions)
-        return persistScan(folderId, originDeviceId, scannedFiles, presentPaths, nowMillis)
+        return persistScan(folderId, originDeviceId, scannedFiles, presentPaths, nowMillis, baseline)
     }
 
     suspend fun scanDocumentTree(
@@ -48,14 +50,35 @@ class SnapshotRepository(
         rules: SyncFilterRules,
         nowMillis: Long = System.currentTimeMillis(),
     ): SnapshotManifest? {
+        val baseline = syncDao.folderIndexState(folderId, originDeviceId)?.maxSequence
         val localExceptions = exceptionRepository.locallyActivePaths(folderId, originDeviceId)
         val treeScanner = DocumentTreeScanner(context)
         val presentPaths = treeScanner.listRelativeFilePaths(treeUri)
         val scannedFiles = treeScanner.scan(treeUri, rules, localExceptions)
-        return persistScan(folderId, originDeviceId, scannedFiles, presentPaths, nowMillis)
+        return persistScan(folderId, originDeviceId, scannedFiles, presentPaths, nowMillis, baseline)
     }
 
+    /**
+     * Another peer's session can apply a file while this scan is hashing the folder. Recording the
+     * stale hash would claim it as a local edit and revert the incoming change across the mesh, so a
+     * scan is discarded when the index moved since it began; the next scan picks the folder up.
+     */
     private suspend fun persistScan(
+        folderId: String,
+        originDeviceId: String,
+        scannedFiles: List<FileManifestEntry>,
+        locallyPresentPaths: Set<String>,
+        nowMillis: Long,
+        baselineMaxSequence: Long?,
+    ): SnapshotManifest? = database.withTransaction {
+        if (syncDao.folderIndexState(folderId, originDeviceId)?.maxSequence != baselineMaxSequence) {
+            null
+        } else {
+            persistCurrentScan(folderId, originDeviceId, scannedFiles, locallyPresentPaths, nowMillis)
+        }
+    }
+
+    private suspend fun persistCurrentScan(
         folderId: String,
         originDeviceId: String,
         scannedFiles: List<FileManifestEntry>,
