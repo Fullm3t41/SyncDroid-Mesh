@@ -55,6 +55,7 @@ data class MeshRuntimeState(
     val folders: List<MeshFolder> = emptyList(),
     val chatMessages: List<MeshChatMessage> = emptyList(),
     val fileHistory: List<FileHistoryEvent> = emptyList(),
+    val conflicts: List<FileConflictReview> = emptyList(),
     val currentWifiName: String? = null,
     val registeredWifiNames: Set<String> = emptySet(),
     val cloudAccounts: List<CloudAccountStatus> = emptyList(),
@@ -470,6 +471,41 @@ class MeshRuntime(
         }.onFailure(::report)
     }
 
+    fun keepLocalConflict(conflictId: String) = scope.launch {
+        val profile = store.profile() ?: return@launch
+        updateBusy("Resolving conflict with this Mac's copy…")
+        runCatching {
+            store.resolveConflictKeepLocal(conflictId, identity.deviceId)
+            refresh("Conflict resolved · local copy kept")
+            connectToAvailablePeers(profile, discoveredPeers().values, initiatorOrdering = false)
+        }.onFailure(::report)
+    }
+
+    fun keepRemoteConflict(conflictId: String) = queueConflictResolution(
+        conflictId,
+        ConflictResolutionAction.KEEP_REMOTE,
+    )
+
+    fun keepBothConflict(conflictId: String) = queueConflictResolution(
+        conflictId,
+        ConflictResolutionAction.KEEP_BOTH,
+    )
+
+    private fun queueConflictResolution(conflictId: String, action: ConflictResolutionAction) = scope.launch {
+        val profile = store.profile() ?: return@launch
+        runCatching {
+            val target = store.queueConflictResolution(conflictId, action, identity.deviceId)
+            refresh(
+                if (action == ConflictResolutionAction.KEEP_BOTH) {
+                    "Conflict resolution queued · remote copy will be saved as $target"
+                } else {
+                    "Conflict resolution queued · waiting for the source device"
+                },
+            )
+            connectToAvailablePeers(profile, discoveredPeers().values, initiatorOrdering = false)
+        }.onFailure(::report)
+    }
+
     fun declineFolder(folderId: String) = scope.launch {
         runCatching {
             store.declineFolder(folderId, identity.deviceId)
@@ -572,6 +608,7 @@ class MeshRuntime(
             folders = profile?.let { store.folders(it.groupId, identity.deviceId) }.orEmpty(),
             chatMessages = profile?.let { store.chatMessages(it.groupId) }.orEmpty(),
             fileHistory = store.fileHistory(),
+            conflicts = store.unresolvedConflictReviews(),
             currentWifiName = MacWifi.currentSsid() ?: mutableState.value.currentWifiName,
             registeredWifiNames = preferences.registeredWifiNames,
             cloudAccounts = cloud.accounts(),
@@ -609,7 +646,12 @@ class MeshRuntime(
         stableConnections += connection
         try {
             val remoteId = StablePeerAuthenticator(store, identity, profile.groupId).authenticate(connection)
-            if (!activeSessions.add(remoteId)) return
+            if (!activeSessions.add(remoteId)) {
+                // Both devices dialled each other at once. Say so explicitly; a bare close looks
+                // like a failed sync to the peer even though the other session carries on.
+                connection.declineAsBusy()
+                return
+            }
             updatePeerSyncState(remoteId)
             try {
                 syncMutex.withLock {
@@ -731,10 +773,11 @@ class MeshRuntime(
     }
 
     private fun reportSessionFailure(peerId: String, error: Throwable) {
-        activeSessions.remove(peerId)
+        // runStableSession releases its own activeSessions slot. Releasing it here as well would
+        // drop the slot held by a concurrent inbound session with the same peer.
         automaticallyContactedPeers.remove(peerId)
         connectionJobs.remove(peerId)
-        if (error is CancellationException) return
+        if (error is CancellationException || error is PeerSessionBusyException) return
         val peerName = store.profile()
             ?.let { profile -> store.devices(profile.groupId).firstOrNull { it.deviceId == peerId } }
             ?.displayName

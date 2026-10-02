@@ -46,9 +46,11 @@ private fun MeshStateBundle.toWire() = MeshStateBundleWire(
 
 private fun MeshStateBundleWire.toDomain() = MeshStateBundle(
     groupName,
-    membershipEvents.map { event ->
+    // A newer app version may add event types; skip those instead of rejecting the whole bundle.
+    membershipEvents.mapNotNull { event ->
+        val type = enumValues<MembershipEventType>().firstOrNull { it.name == event.eventType } ?: return@mapNotNull null
         MembershipEvent(
-            event.eventId, event.groupId, MembershipEventType.valueOf(event.eventType), event.subjectDeviceId,
+            event.eventId, event.groupId, type, event.subjectDeviceId,
             event.subjectDisplayName, event.subjectPublicKeyBase64, event.signerDeviceId,
             event.parentEventIds, event.version, event.createdAtMillis, event.signatureBase64,
         )

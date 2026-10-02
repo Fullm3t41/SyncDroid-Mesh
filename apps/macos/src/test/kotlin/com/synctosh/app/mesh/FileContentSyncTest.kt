@@ -143,6 +143,70 @@ class FileContentSyncTest {
         assertContentEquals(content, Files.readAllBytes(destination.resolve("restored.sav")))
     }
 
+    @Test
+    fun concurrentEditsCanKeepBothWithANumberedCopy() = runBlocking {
+        val directory = Files.createTempDirectory("synctosh-conflict-session")
+        val firstIdentity = memoryIdentity("conflict-first")
+        val secondIdentity = memoryIdentity("conflict-second")
+        val firstFolder = Files.createDirectory(directory.resolve("first-folder"))
+        val secondFolder = Files.createDirectory(directory.resolve("second-folder"))
+
+        MeshStore(directory.resolve("first.db")).use { firstStore ->
+            MeshStore(directory.resolve("second.db")).use { secondStore ->
+                val profile = firstStore.createMesh("Conflict mesh", "First Mac", firstIdentity)
+                val parents = firstStore.membershipEvents(profile.groupId)
+                firstStore.applyMembership(
+                    profile.groupName,
+                    MembershipEvent.createAddDevice(
+                        profile.groupId,
+                        "Second Mac",
+                        secondIdentity.publicKey,
+                        firstIdentity,
+                        parents.map { it.eventId },
+                        parents.fold(VersionVector()) { vector, event -> vector.merge(event.version) }
+                            .increment(firstIdentity.deviceId),
+                    ),
+                )
+                val folder = signedFolder(profile.groupId, firstIdentity)
+                firstStore.importBundle(
+                    MeshStateBundle(profile.groupName, firstStore.membershipEvents(profile.groupId), listOf(folder)),
+                )
+                val secondProfile = secondStore.importBundle(
+                    MeshWireCodec.decode(MeshWireCodec.encode(firstStore.exportBundle())),
+                    requiredLocalDeviceId = secondIdentity.deviceId,
+                )
+                firstStore.configureFolder(folder.folderId, firstIdentity.deviceId, firstFolder)
+                secondStore.configureFolder(folder.folderId, secondIdentity.deviceId, secondFolder)
+                firstStore.recordTlsKey(profile.groupId, secondIdentity.deviceId, secondIdentity.publicKey.encoded)
+                secondStore.recordTlsKey(profile.groupId, firstIdentity.deviceId, firstIdentity.publicKey.encoded)
+
+                Files.write(firstFolder.resolve("slot.sav"), byteArrayOf(1, 2, 3))
+                syncOnce(firstStore, firstIdentity, profile, secondStore, secondIdentity, secondProfile)
+
+                val firstEdit = byteArrayOf(10, 11, 12, 13)
+                val secondEdit = byteArrayOf(20, 21, 22, 23, 24)
+                Files.write(firstFolder.resolve("slot.sav"), firstEdit)
+                Files.write(secondFolder.resolve("slot.sav"), secondEdit)
+                syncOnce(firstStore, firstIdentity, profile, secondStore, secondIdentity, secondProfile)
+
+                val conflict = firstStore.unresolvedConflictReviews().single()
+                assertEquals(
+                    "slot_1.sav",
+                    firstStore.queueConflictResolution(
+                        conflict.conflict.conflictId,
+                        ConflictResolutionAction.KEEP_BOTH,
+                        firstIdentity.deviceId,
+                    ),
+                )
+                syncOnce(firstStore, firstIdentity, profile, secondStore, secondIdentity, secondProfile)
+
+                assertContentEquals(firstEdit, Files.readAllBytes(firstFolder.resolve("slot.sav")))
+                assertContentEquals(secondEdit, Files.readAllBytes(firstFolder.resolve("slot_1.sav")))
+                assertTrue(firstStore.unresolvedConflicts().isEmpty())
+            }
+        }
+    }
+
     private suspend fun syncOnce(
         firstStore: MeshStore,
         firstIdentity: MacDeviceIdentity,

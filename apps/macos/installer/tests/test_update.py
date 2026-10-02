@@ -51,15 +51,23 @@ fake_mv() {
 }
 '''
             code = code.replace('set -euo pipefail', 'set -euo pipefail\n' + stubs)
+            # Keep the wait for a still-running app short enough for the test timeout.
+            code = code.replace('attempt<480', 'attempt<4')
             script = helper / 'update.sh'
             script.write_text(code)
             env = dict(os.environ, FIXTURE=str(root), MODE=mode)
             # A reaped child PID is guaranteed to have belonged to this test, not a real app.
             child = subprocess.Popen(['true'])
             child.wait()
-            result = subprocess.run(['bash', str(script), str(root / 'release.dmg'),
-                                     str(target), str(child.pid), '0'], env=env,
-                                    capture_output=True, text=True, timeout=10)
+            running = subprocess.Popen(['sleep', '30']) if mode == 'still_running' else None
+            try:
+                result = subprocess.run(['bash', str(script), str(root / 'release.dmg'),
+                                         str(target), str((running or child).pid), '0'], env=env,
+                                        capture_output=True, text=True, timeout=10)
+            finally:
+                if running:
+                    running.kill()
+                    running.wait()
             self.assertEqual(result.returncode == 0, mode == 'success', result.stderr)
             self.assertEqual((target / 'version').read_text(), 'new' if mode == 'success' else 'old')
             self.assertEqual((data / 'identity.p12').read_text(), 'identity')
@@ -80,6 +88,9 @@ fake_mv() {
 
     def test_failed_launch_rolls_back(self):
         self.run_update('launch_failure')
+
+    def test_running_application_is_not_replaced(self):
+        self.run_update('still_running')
 
 
 if __name__ == '__main__':

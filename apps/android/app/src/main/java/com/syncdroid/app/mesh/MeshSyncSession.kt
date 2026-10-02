@@ -17,6 +17,7 @@ import com.syncdroid.app.sync.AtomicFileApplier
 import com.syncdroid.app.sync.BlockManifest
 import com.syncdroid.app.sync.BlockManifestBuilder
 import com.syncdroid.app.sync.BlockManifestRepository
+import com.syncdroid.app.sync.CASE_CLASH_REASON
 import com.syncdroid.app.sync.FileSyncAction
 import com.syncdroid.app.sync.FileSyncPlan
 import com.syncdroid.app.sync.FileHistoryRepository
@@ -34,14 +35,17 @@ import com.syncdroid.app.sync.SyncFileApplier
 import com.syncdroid.app.sync.VersionVector
 import com.syncdroid.app.sync.WholeFilePeerClient
 import com.syncdroid.shared.protocol.FileTransferMessage
+import com.syncdroid.shared.protocol.MESH_SESSION_BUSY_REASON
 import com.syncdroid.shared.protocol.MeshSessionMessage
 import com.syncdroid.shared.protocol.SessionFolderKey
 import com.syncdroid.shared.sync.ActiveTransferClaims
 import com.syncdroid.shared.sync.activeTransferKey
+import com.syncdroid.shared.sync.fitIndexUpdates
 import com.syncdroid.shared.update.MeshUpdateCache
 import com.syncdroid.shared.update.MeshUpdateExchange
 import java.io.File
 import java.io.FileOutputStream
+import java.net.SocketTimeoutException
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import org.json.JSONArray
@@ -98,6 +102,7 @@ class MeshSyncSession(
         val receiveResult = exchangeMetadata(connection)
         exchangeFolderKeys(connection)
         chatAttachments.cleanupExpired(groupId)
+        cleanupStaleTransfers()
         val missingAttachments = chatAttachments.missing(
             database.chatDao().recentMessages(groupId, MAX_REPLICATED_CHAT_ATTACHMENTS)
                 .asReversed().map { it.toDomain() },
@@ -108,7 +113,7 @@ class MeshSyncSession(
         connection.send(MeshSessionCodec.encode(MeshSessionMessage.Catalog(localCatalog)))
         val remoteCatalog = connection.receiveSession<MeshSessionMessage.Catalog>().folders
 
-        val updates = buildUpdatesForPeer(remoteCatalog)
+        val updates = fitIndexUpdates(buildUpdatesForPeer(remoteCatalog))
         connection.send(MeshSessionCodec.encode(MeshSessionMessage.IndexBatch(updates)))
         val receivedUpdates = connection.receiveSession<MeshSessionMessage.IndexBatch>().updates
         val receivedPlans = receiveIndexes(remoteDeviceId, receivedUpdates)
@@ -183,7 +188,12 @@ class MeshSyncSession(
                 val temp = File.createTempFile("cloud-manifest-", ".sdenc", transferCache())
                 try {
                     remote.download(item.id, temp.toPath())
-                    candidateKey to CloudEncryptedObjects.decryptManifest(candidateKey, publisher.deviceId, temp.readBytes())
+                    // An unsigned or forged manifest is skipped rather than stopping this folder's sync.
+                    runCatching {
+                        candidateKey to CloudEncryptedObjects.decryptManifest(
+                            candidateKey, publisher.deviceId, temp.readBytes(), decodePublicKey(publisher.publicKeyBase64),
+                        )
+                    }.getOrNull()
                 } finally { temp.delete() }
             }
             val (sourceKey, manifest) = manifests.maxByOrNull { it.second.publishedAtMillis } ?: continue
@@ -198,6 +208,12 @@ class MeshSyncSession(
                     FileSyncAction.Nothing -> if (!blocked) remoteIndexes.acknowledgeRemoteApplied(publisher.deviceId, plan.remote)
                     FileSyncAction.DownloadRemote -> {
                         val applier = requireNotNull(binding.fileApplierOrNull(plan)) { "Folder permission is unavailable" }
+                        if (!plan.remote.deleted && applier.storageProblem(plan.relativePath) != null) {
+                            remoteIndexes.recordConflict(folderId, plan.local, plan.remote)
+                            blocked = true
+                            result = result.copy(conflicts = result.conflicts + 1)
+                            continue
+                        }
                         val before = syncDao.fileVersion(folderId, plan.relativePath)
                         if (plan.remote.deleted) {
                             if (plan.remote.purgeRecovery) {
@@ -252,7 +268,7 @@ class MeshSyncSession(
             System.currentTimeMillis(), current, publisherScopedFiles = true)
         val temp = File.createTempFile("cloud-publish-", ".sdenc", transferCache())
         try {
-            temp.writeBytes(CloudEncryptedObjects.encryptManifest(key, manifest))
+            temp.writeBytes(CloudEncryptedObjects.encryptManifest(key, manifest, identity::sign))
             remote.upload(parent, CloudEncryptedObjects.manifestName(key, identity.deviceId), temp.toPath())
         } finally { temp.delete() }
         val ledgerId = UUID.nameUUIDFromBytes(parent.toByteArray())
@@ -268,7 +284,13 @@ class MeshSyncSession(
     private suspend fun exchangeMetadata(connection: AuthenticatedPeerConnection): MeshReceiveResult {
         val local = MeshWireCodec.encode(replication.export(groupId, groupName))
         connection.send(MeshSessionCodec.encode(MeshSessionMessage.Metadata(local)))
-        val remote = connection.receiveSession<MeshSessionMessage.Metadata>()
+        val remote = try {
+            connection.receiveSession<MeshSessionMessage.Metadata>()
+        } catch (timeout: SocketTimeoutException) {
+            // Desktop apps sync one peer at a time and queue the rest, so a long wait before the
+            // first reply means the peer is busy rather than that this sync failed.
+            throw PeerSessionBusyException().apply { initCause(timeout) }
+        }
         return replication.receive(MeshWireCodec.decode(remote.bundle))
     }
 
@@ -328,15 +350,14 @@ class MeshSyncSession(
             val versions = (if (full) syncDao.fileVersions(folder.folderId) else {
                 syncDao.fileVersionsAfter(folder.folderId, previous, MAX_INDEX_FILES)
             }).sortedBy(FileVersionEntity::localSequence)
-            require(versions.size < MAX_INDEX_FILES || versions.last().localSequence == local.maxSequence) {
-                "Folder index is too large for one session"
-            }
+            // A capped query ends the range at its last record; the peer asks for the rest next session.
+            val lastSequence = if (!full && versions.size >= MAX_INDEX_FILES) versions.last().localSequence else local.maxSequence
             val binding = syncDao.getBinding(folder.folderId, identity.deviceId)
             FolderIndexUpdate(
                 folder.folderId,
                 local.indexEpoch,
                 previous,
-                local.maxSequence,
+                lastSequence,
                 full,
                 versions.map { it.toIndexedRecord(binding) },
             )
@@ -389,14 +410,24 @@ class MeshSyncSession(
     }.sortedWith(compareBy({ it.remote.folderId }, { it.remote.remoteSequence }))
 
     private suspend fun prepareDownloads(plans: List<FileSyncPlan>): List<PreparedDownload> {
+        val deletedSpellings = plans.filter { it.remote.deleted }
+            .mapTo(mutableSetOf()) { it.remote.folderId to it.relativePath.lowercase(java.util.Locale.ROOT) }
         return plans.map { plan ->
             if (plan.action != FileSyncAction.DownloadRemote || plan.remote.deleted) {
                 PreparedDownload(plan, null, 0, 0L)
             } else {
                 val binding = syncDao.getBinding(plan.remote.folderId, identity.deviceId)
                 val applier = binding?.fileApplierOrNull(plan)
+                val storageProblem = applier?.storageProblem(plan.relativePath)
                 if (applier == null) {
                     PreparedDownload(plan, null, 0, 0L)
+                } else if (storageProblem != null) {
+                    // A capitalization-only rename deletes the old spelling in the same changes: wait one
+                    // session for it to go instead of reporting a conflict.
+                    val renaming = storageProblem == CASE_CLASH_REASON &&
+                        (plan.remote.folderId to plan.relativePath.lowercase(java.util.Locale.ROOT)) in deletedSpellings
+                    if (!renaming) remoteIndexes.recordConflict(plan.remote.folderId, plan.local, plan.remote)
+                    PreparedDownload(plan.copy(action = FileSyncAction.Conflict, reason = storageProblem), null, 0, 0L)
                 } else {
                     val storageWarning = storageCapacity.warningForIncomingFile(
                         binding,
@@ -517,6 +548,7 @@ class MeshSyncSession(
         }
         attachmentDownloads.forEach { message ->
             runCatching { chatAttachments.receive(connection, message, onIncomingBytes) }
+                .onFailure { if (it is CancellationException) throw it }
         }
         return DownloadPhaseResult(storageBlockedFolders, storageWarnings, appliedChangeCount)
     }
@@ -583,6 +615,21 @@ class MeshSyncSession(
 
     private fun transferCache(): File = File(appContext.cacheDir, "mesh-transfers").apply { mkdirs() }
 
+    /**
+     * Removes partial downloads of versions that stopped arriving, and temporary files a crash
+     * left behind. Without this they stay in the transfer cache until Android clears it.
+     */
+    private suspend fun cleanupStaleTransfers(nowMillis: Long = System.currentTimeMillis()) {
+        val cutoff = nowMillis - STALE_TRANSFER_MILLIS
+        val root = transferCache().canonicalFile
+        syncDao.stalePartialTransfers(cutoff).forEach { partial ->
+            syncDao.deletePartialTransfer(partial.folderId, partial.fileId, partial.contentSha256)
+            File(partial.temporaryPath).canonicalFile.takeIf { it.toPath().startsWith(root.toPath()) }?.delete()
+        }
+        root.listFiles()?.filter { it.isFile && it.name.endsWith(".part") && it.lastModified() < cutoff }
+            ?.forEach(File::delete)
+    }
+
     private data class PreparedDownload(
         val plan: FileSyncPlan,
         val blockReceiver: ResumableBlockReceiver?,
@@ -601,6 +648,7 @@ class MeshSyncSession(
         const val MAX_INDEX_FILES = 50_000
         const val MAX_REPLICATED_CHAT_ATTACHMENTS = 5_000
         const val RESUMABLE_THRESHOLD_BYTES = 1024 * 1024L
+        const val STALE_TRANSFER_MILLIS = 7L * 24 * 60 * 60 * 1_000
     }
 }
 
@@ -660,4 +708,4 @@ private fun LocalFolderBindingEntity.configuredLocationOrNull(): String? {
 
 private fun JSONArray.strings(): List<String> = List(length()) { getString(it) }
 
-internal const val SESSION_BUSY_REASON = "Peer session already active"
+internal const val SESSION_BUSY_REASON = MESH_SESSION_BUSY_REASON

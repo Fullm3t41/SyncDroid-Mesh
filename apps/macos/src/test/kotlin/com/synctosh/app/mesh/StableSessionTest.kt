@@ -4,6 +4,7 @@ import java.net.InetAddress
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
@@ -59,6 +60,51 @@ class StableSessionTest {
                     assertTrue(joinerStore.devices(profile.groupId).first { it.deviceId == inviterIdentity.deviceId }.lastSeenAtMillis != null)
                     assertEquals(listOf(inviterMessage, joinerMessage), inviterStore.chatMessages(profile.groupId))
                     assertEquals(listOf(inviterMessage, joinerMessage), joinerStore.chatMessages(profile.groupId))
+                } finally {
+                    server.close()
+                }
+            }
+        }
+    }
+
+    @Test
+    fun busyReplyFromPeerIsReportedAsCollisionRatherThanFailure() = runBlocking<Unit> {
+        val directory = Files.createTempDirectory("synctosh-busy-session-test")
+        val inviterIdentity = memoryIdentity("busy-inviter")
+        val joinerIdentity = memoryIdentity("busy-joiner")
+        MeshStore(directory.resolve("inviter.db")).use { inviterStore ->
+            MeshStore(directory.resolve("joiner.db")).use { joinerStore ->
+                val profile = inviterStore.createMesh("Home mesh", "Desktop A", inviterIdentity)
+                val parents = inviterStore.membershipEvents(profile.groupId)
+                inviterStore.applyMembership(
+                    profile.groupName,
+                    MembershipEvent.createAddDevice(
+                        profile.groupId,
+                        "Android",
+                        joinerIdentity.publicKey,
+                        inviterIdentity,
+                        parents.map { it.eventId },
+                        parents.fold(VersionVector()) { merged, event -> merged.merge(event.version) }
+                            .increment(inviterIdentity.deviceId),
+                    ),
+                )
+                val joinerProfile = joinerStore.importBundle(MeshWireCodec.decode(MeshWireCodec.encode(inviterStore.exportBundle())))
+
+                // The inviter already has a session with the joiner, so it declines this duplicate one.
+                val server = MeshPeerServer(DeviceTlsContext(inviterIdentity, allowUnknownPeer = true)) { connection ->
+                    StablePeerAuthenticator(inviterStore, inviterIdentity, profile.groupId).authenticate(connection)
+                    connection.declineAsBusy()
+                }
+                try {
+                    val port = server.start()
+                    MeshPeerClient(DeviceTlsContext(joinerIdentity, allowUnknownPeer = true))
+                        .connect(InetAddress.getLoopbackAddress(), port)
+                        .use { connection ->
+                            val remote = StablePeerAuthenticator(joinerStore, joinerIdentity, joinerProfile.groupId).authenticate(connection)
+                            assertFailsWith<PeerSessionBusyException> {
+                                MeshFileSyncSession(joinerStore, joinerIdentity, joinerProfile).runFiles(connection, remote)
+                            }
+                        }
                 } finally {
                     server.close()
                 }

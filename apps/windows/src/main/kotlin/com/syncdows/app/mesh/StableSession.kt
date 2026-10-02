@@ -3,12 +3,14 @@ package com.syncdows.app.mesh
 import com.syncdows.app.platform.WindowsAppPaths
 
 import com.syncdroid.shared.protocol.FileTransferMessage
+import com.syncdroid.shared.protocol.MESH_SESSION_BUSY_REASON
 import com.syncdroid.shared.protocol.MeshSessionMessage
 import com.syncdroid.shared.protocol.SessionFolderKey
 import com.syncdroid.shared.cloud.FolderKeyMaterial
 import com.syncdroid.shared.protocol.verifyEcdsaSha256
 import com.syncdroid.shared.sync.ActiveTransferClaims
 import com.syncdroid.shared.sync.activeTransferKey
+import com.syncdroid.shared.sync.fitIndexUpdates
 import com.syncdroid.shared.update.MeshUpdateCache
 import com.syncdroid.shared.update.MeshUpdateExchange
 import java.security.SecureRandom
@@ -92,6 +94,7 @@ class MeshFileSyncSession(
 
     suspend fun runFiles(connection: AuthenticatedPeerConnection, remoteDeviceId: String): MeshFileSyncResult {
         history.cleanupExpired()
+        cleanupStaleTransfers(store, transferCache())
         val metadataCountBefore = store.exportBundle().replicatedItemCount()
         connection.send(MeshSessionCodec.encode(MeshSessionMessage.Metadata(MeshWireCodec.encode(store.exportBundle()))))
         val remoteMetadata = connection.receiveSession<MeshSessionMessage.Metadata>()
@@ -106,7 +109,7 @@ class MeshFileSyncSession(
         engine.scanConfiguredFolders()
         connection.send(MeshSessionCodec.encode(MeshSessionMessage.Catalog(engine.buildCatalog(remoteDeviceId))))
         val remoteCatalog = connection.receiveSession<MeshSessionMessage.Catalog>().folders
-        connection.send(MeshSessionCodec.encode(MeshSessionMessage.IndexBatch(engine.buildUpdatesForPeer(remoteCatalog))))
+        connection.send(MeshSessionCodec.encode(MeshSessionMessage.IndexBatch(fitIndexUpdates(engine.buildUpdatesForPeer(remoteCatalog)))))
         val remoteUpdates = connection.receiveSession<MeshSessionMessage.IndexBatch>().updates
         val candidatePlans = engine.receiveIndexes(remoteDeviceId, remoteUpdates)
         val transferClaims = ActiveTransferClaims.claim(
@@ -261,6 +264,7 @@ class MeshFileSyncSession(
         }
         attachmentDownloads.forEach { message ->
             runCatching { chatAttachments.receive(connection, message, onIncomingBytes) }
+                .onFailure { if (it is CancellationException) throw it }
         }
         return appliedChangeCount
     }
@@ -331,11 +335,28 @@ class MetadataOnlyMeshSession(
 
 private suspend inline fun <reified T : MeshSessionMessage> AuthenticatedPeerConnection.receiveSession(): T {
     return when (val value = MeshSessionCodec.decode(receive())) {
-        is MeshSessionMessage.Error -> error(value.reason)
+        is MeshSessionMessage.Error -> if (value.reason == MESH_SESSION_BUSY_REASON) {
+            throw PeerSessionBusyException()
+        } else {
+            error(value.reason)
+        }
         is T -> value
         else -> error("Unexpected mesh session message")
     }
 }
+
+/** The peer already has a session with this device, so this connection was a duplicate rather than a failed sync. */
+internal class PeerSessionBusyException : IllegalStateException(MESH_SESSION_BUSY_REASON)
+
+/** Declines a duplicate session so the peer sees a collision instead of a failed sync. */
+internal suspend fun AuthenticatedPeerConnection.declineAsBusy() {
+    runCatching { send(MeshSessionCodec.encode(MeshSessionMessage.Error(MESH_SESSION_BUSY_REASON))) }
+    // Closing with the peer's opening message unread resets the connection, and Windows then
+    // discards the reply before the peer can read it. Wait for the peer to hang up first.
+    drainUntilClosed(BUSY_DRAIN_TIMEOUT_MILLIS)
+}
+
+private const val BUSY_DRAIN_TIMEOUT_MILLIS = 2_000L
 
 suspend fun exchangeMeshUpdates(
     cache: MeshUpdateCache?, localDeviceId: String, remoteDeviceId: String,

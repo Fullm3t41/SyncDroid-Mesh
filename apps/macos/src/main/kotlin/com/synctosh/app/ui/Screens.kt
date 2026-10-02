@@ -48,6 +48,7 @@ import androidx.compose.material.icons.rounded.Restore
 import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material.icons.rounded.SystemUpdateAlt
 import androidx.compose.material.icons.rounded.Wifi
+import androidx.compose.material.icons.rounded.WarningAmber
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -101,6 +102,7 @@ import com.synctosh.app.model.ThemeMode
 import com.synctosh.app.mesh.LocalFolderBindingState
 import com.synctosh.app.mesh.FileHistoryAction
 import com.synctosh.app.mesh.FileHistoryEvent
+import com.synctosh.app.mesh.FileConflictReview
 import com.synctosh.app.mesh.MeshFolder
 import com.synctosh.app.mesh.MeshChatMessage
 import com.synctosh.app.mesh.SUPPORTED_DISCOVERY_INTERVALS
@@ -966,6 +968,8 @@ fun SettingsScreen(
     onThemeModeChanged: (ThemeMode) -> Unit,
     onOpenPowerSettings: () -> Unit,
     onOpenFileHistory: () -> Unit,
+    conflictCount: Int,
+    onOpenConflicts: () -> Unit,
     cloudScope: CloudSyncScope,
     onOpenCloudSettings: () -> Unit,
     launchAtLogin: Boolean,
@@ -1016,6 +1020,13 @@ fun SettingsScreen(
                         CloudSyncScope.ALL_FOLDERS -> "Enabled for all folders"
                     },
                     onClick = onOpenCloudSettings,
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                SettingsActionRow(
+                    icon = Icons.Rounded.WarningAmber,
+                    title = "File conflicts",
+                    detail = if (conflictCount == 0) "No files need review" else "$conflictCount file${if (conflictCount == 1) "" else "s"} need review",
+                    onClick = onOpenConflicts,
                 )
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 SettingsActionRow(
@@ -1160,6 +1171,136 @@ private fun UpdateCard(state: UpdateState, appName: String, onClick: () -> Unit)
                     Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     Text(detail, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ConflictReviewScreen(
+    conflicts: List<FileConflictReview>,
+    folders: List<MeshFolder>,
+    deviceNames: Map<String, String>,
+    busy: Boolean,
+    onKeepLocal: (FileConflictReview) -> Unit,
+    onKeepRemote: (FileConflictReview) -> Unit,
+    onKeepBoth: (FileConflictReview) -> Unit,
+    onBack: () -> Unit,
+) {
+    val folderNames = folders.associate { it.folderId to it.displayName }
+    Column(Modifier.fillMaxSize()) {
+        TopAppBar(
+            title = { Text("File conflicts") },
+            navigationIcon = {
+                IconButton(onClick = onBack) {
+                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back")
+                }
+            },
+            colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
+        )
+        if (conflicts.isEmpty()) {
+            Box(Modifier.fillMaxSize().padding(26.dp), contentAlignment = Alignment.Center) {
+                EmptyStateCard("No conflicts", "SyncTosh will list concurrent file edits here when your choice is required.")
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(horizontal = 26.dp, vertical = 14.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                items(conflicts, key = { it.conflict.conflictId }) { review ->
+                    val remoteName = deviceNames[review.remote.deviceId] ?: review.remote.deviceId.take(8)
+                    Surface(
+                        color = MaterialTheme.colorScheme.surface,
+                        shape = androidx.compose.foundation.shape.RoundedCornerShape(18.dp),
+                    ) {
+                        Column(Modifier.padding(17.dp)) {
+                            Text(review.conflict.relativePath, style = MaterialTheme.typography.titleLarge)
+                            Text(
+                                folderNames[review.conflict.folderId] ?: "Mesh folder",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(Modifier.height(14.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                ConflictVersionCard(
+                                    title = "This Mac",
+                                    sizeBytes = review.local?.sizeBytes,
+                                    modifiedAtMillis = review.local?.modifiedAtMillis,
+                                    hash = review.local?.contentSha256,
+                                    deleted = review.local?.deleted == true,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                ConflictVersionCard(
+                                    title = remoteName,
+                                    sizeBytes = review.remote.sizeBytes,
+                                    modifiedAtMillis = review.remote.modifiedAtMillis,
+                                    hash = review.remote.contentSha256,
+                                    deleted = review.remote.deleted,
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                            Spacer(Modifier.height(14.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(
+                                    onClick = { onKeepLocal(review) },
+                                    enabled = !busy && review.local != null,
+                                ) { Text("Keep this Mac") }
+                                OutlinedButton(
+                                    onClick = { onKeepRemote(review) },
+                                    enabled = !busy,
+                                ) { Text("Keep $remoteName") }
+                                OutlinedButton(
+                                    onClick = { onKeepBoth(review) },
+                                    enabled = !busy && review.local != null && !review.remote.deleted,
+                                ) { Text("Keep both") }
+                            }
+                            if (!review.remote.deleted) {
+                                Spacer(Modifier.height(8.dp))
+                                Text(
+                                    "Keep both saves the $remoteName copy using the next available _1, _2… filename.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConflictVersionCard(
+    title: String,
+    sizeBytes: Long?,
+    modifiedAtMillis: Long?,
+    hash: String?,
+    deleted: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier,
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp),
+    ) {
+        Column(Modifier.padding(13.dp)) {
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            Text(
+                if (deleted) "Deleted version" else sizeBytes?.let(::formatFileSize) ?: "Unknown size",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            modifiedAtMillis?.let {
+                Text(formatHistoryTime(it), style = MaterialTheme.typography.bodySmall)
+            }
+            hash?.takeIf(String::isNotBlank)?.let {
+                Text(
+                    "SHA-256 ${it.take(12)}…",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }

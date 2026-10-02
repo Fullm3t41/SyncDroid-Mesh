@@ -139,7 +139,11 @@ class ResumableBlockPeerClient(
     private val receiver: ResumableBlockReceiver,
     private val onBytesTransferred: (Long) -> Unit = {},
 ) {
-    suspend fun fetchMissing(connection: AuthenticatedPeerConnection, manifest: BlockManifest): Boolean {
+    suspend fun fetchMissing(
+        connection: AuthenticatedPeerConnection,
+        manifest: BlockManifest,
+        requestRelativePath: String = manifest.relativePath,
+    ): Boolean {
         val missing = receiver.missingBlocks(manifest)
         if (missing.isEmpty()) return true
         for (index in missing) {
@@ -148,7 +152,7 @@ class ResumableBlockPeerClient(
                     FileTransferMessage.BlockRequest(
                         manifest.folderId,
                         manifest.fileId,
-                        manifest.relativePath,
+                        requestRelativePath,
                         manifest.contentSha256,
                         index,
                     ),
@@ -172,3 +176,26 @@ class ResumableBlockPeerClient(
 }
 
 private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
+
+/**
+ * Removes partial downloads of versions that stopped arriving, and temporary files a crash left
+ * behind. Without this they stay in the transfer directory forever.
+ */
+internal fun cleanupStaleTransfers(store: MeshStore, directory: Path, nowMillis: Long = System.currentTimeMillis()) {
+    val cutoff = nowMillis - STALE_TRANSFER_MILLIS
+    val root = directory.toAbsolutePath().normalize()
+    store.stalePartialTransfers(cutoff).forEach { partial ->
+        store.deletePartialTransfer(partial.folderId, partial.fileId, partial.contentSha256)
+        runCatching { Path.of(partial.temporaryPath).toAbsolutePath().normalize() }.getOrNull()
+            ?.takeIf { it.startsWith(root) }
+            ?.let { runCatching { Files.deleteIfExists(it) } }
+    }
+    if (!Files.isDirectory(root)) return
+    Files.list(root).use { files ->
+        files.filter { Files.isRegularFile(it) && it.fileName.toString().endsWith(".part") }
+            .filter { runCatching { Files.getLastModifiedTime(it).toMillis() < cutoff }.getOrDefault(false) }
+            .forEach { runCatching { Files.deleteIfExists(it) } }
+    }
+}
+
+private const val STALE_TRANSFER_MILLIS = 7L * 24 * 60 * 60 * 1_000

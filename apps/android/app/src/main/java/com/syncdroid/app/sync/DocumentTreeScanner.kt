@@ -1,5 +1,6 @@
 package com.syncdroid.app.sync
 
+import com.syncdroid.shared.sync.isSyncIgnoredPath
 import android.content.Context
 import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
@@ -62,7 +63,8 @@ class DocumentTreeScanner(context: Context) {
                 val relativePath = if (parentPath.isEmpty()) name else "$parentPath/$name"
                 when {
                     child.isDirectory -> scanChildren(child, relativePath, rules, excludedRelativePaths, destination)
-                    child.isFile && relativePath !in excludedRelativePaths && rules.shouldSync(relativePath) -> {
+                    child.isFile && relativePath !in excludedRelativePaths && !isSyncIgnoredPath(relativePath) &&
+                        rules.shouldSync(relativePath) -> {
                         destination += stableEntry(relativePath, child)
                     }
                 }

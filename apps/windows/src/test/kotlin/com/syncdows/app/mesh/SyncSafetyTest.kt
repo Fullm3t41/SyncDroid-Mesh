@@ -6,7 +6,7 @@ import java.nio.file.Files
 import kotlin.test.*
 
 class SyncSafetyTest {
-    @Test fun caseVariantIsRejectedBeforeAcceptingIndex() {
+    @Test fun caseVariantBecomesAConflictWithoutTouchingTheLocalFile() {
         val dir = Files.createTempDirectory("review-case-")
         val identity = WindowsDeviceIdentity("review", dir.resolve("identity.p12"), legacyKeyStoreFactory = null)
         MeshStore(dir.resolve("mesh.db")).use { store ->
@@ -20,8 +20,9 @@ class SyncSafetyTest {
             engine.scanConfiguredFolders()
             val update = requireNotNull(engine.buildFullUpdate(folder.folderId))
             val remote = update.copy(files = update.files.map { it.copy(relativePath = "save.dat", contentSha256 = "a".repeat(64), version = VersionVector(mapOf("other" to 1)), originDeviceId = "other") })
-            assertFailsWith<IllegalArgumentException> { engine.receiveIndexes("other", listOf(remote)) }
-            assertNull(store.folderIndexState(folder.folderId, "other"))
+            val plan = engine.receiveIndexes("other", listOf(remote)).single()
+            assertEquals(FileSyncAction.Conflict, plan.action)
+            assertEquals(listOf("save.dat"), store.unresolvedConflicts().map { it.relativePath })
             assertEquals("local edit", Files.readString(root.resolve("SAVE.dat")))
         }
     }

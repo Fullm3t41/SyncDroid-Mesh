@@ -24,8 +24,9 @@ data class ReleaseManifest(
     val assets: List<ReleaseAsset>,
 ) {
     fun assetFor(platform: UpdatePlatform): ReleaseAsset =
-        assets.singleOrNull { it.platform == platform }
-            ?: error("Release $version does not include ${platform.id}")
+        assetOrNull(platform) ?: error("Release $version does not include ${platform.id}")
+
+    fun assetOrNull(platform: UpdatePlatform): ReleaseAsset? = assets.singleOrNull { it.platform == platform }
 
     fun encode(): String = buildString {
         appendLine("schema=1")
@@ -89,15 +90,42 @@ data class SemanticVersion(val major: Int, val minor: Int, val patch: Int, val p
             ?: when {
                 preRelease == null && other.preRelease != null -> 1
                 preRelease != null && other.preRelease == null -> -1
-                else -> compareValues(preRelease, other.preRelease)
+                preRelease == null || other.preRelease == null -> 0
+                else -> comparePreRelease(preRelease, other.preRelease)
             }
 
     companion object {
         private val pattern = Regex("^(\\d+)\\.(\\d+)\\.(\\d+)(?:-([0-9A-Za-z.-]+))?(?:\\+[0-9A-Za-z.-]+)?$")
 
+        /** Null for anything that is not a version, including numbers too large to compare safely. */
         fun parse(value: String): SemanticVersion? = pattern.matchEntire(value.trim())?.destructured?.let {
             val (major, minor, patch, preRelease) = it
-            SemanticVersion(major.toInt(), minor.toInt(), patch.toInt(), preRelease.ifBlank { null })
+            SemanticVersion(
+                major.toIntOrNull() ?: return null,
+                minor.toIntOrNull() ?: return null,
+                patch.toIntOrNull() ?: return null,
+                preRelease.ifBlank { null },
+            )
+        }
+
+        /** Semantic Versioning precedence: rc.10 follows rc.9, and numeric identifiers precede text. */
+        private fun comparePreRelease(left: String, right: String): Int {
+            val leftParts = left.split('.')
+            val rightParts = right.split('.')
+            for (index in 0 until minOf(leftParts.size, rightParts.size)) {
+                val a = leftParts[index]
+                val b = rightParts[index]
+                val aNumber = a.toBigIntegerOrNull()
+                val bNumber = b.toBigIntegerOrNull()
+                val result = when {
+                    aNumber != null && bNumber != null -> aNumber.compareTo(bNumber)
+                    aNumber != null -> -1
+                    bNumber != null -> 1
+                    else -> a.compareTo(b)
+                }
+                if (result != 0) return result
+            }
+            return leftParts.size.compareTo(rightParts.size)
         }
     }
 }

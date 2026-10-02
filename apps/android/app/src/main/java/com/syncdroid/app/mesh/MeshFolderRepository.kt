@@ -45,6 +45,7 @@ class MeshFolderRepository(
     }
 
     suspend fun receive(announcement: FolderAnnouncement) {
+        if (syncDao.hasFolderAnnouncement(announcement.eventId)) return
         applyVerified(announcement, localLocation = null)
     }
 
@@ -77,10 +78,12 @@ class MeshFolderRepository(
 
     private suspend fun applyVerified(announcement: FolderAnnouncement, localLocation: String?) {
         require(announcement.hasValidEventId()) { "Folder announcement ID does not match its payload" }
-        val signer = requireNotNull(
+        requireNotNull(
             meshDao.getDevice(announcement.groupId, announcement.signerDeviceId),
         ) { "Folder announcement signer is not a member of this mesh" }
-        require(signer.trustState == TRUSTED) { "Folder announcement signer is not trusted" }
+        val signer = requireNotNull(
+            meshDao.signerAt(announcement.groupId, announcement.signerDeviceId, announcement.createdAtMillis),
+        ) { "Folder announcement signer is not trusted" }
         require(announcement.verifySignature(decodePublicKey(signer.publicKeyBase64))) {
             "Folder announcement signature is invalid"
         }
@@ -169,5 +172,3 @@ private fun SyncFolderEntity.matchesImmutableFields(value: FolderAnnouncement): 
         excludePatternsJson == JSONArray(value.excludePatterns).toString() &&
         createdByDeviceId == value.signerDeviceId &&
         createdAtMillis == value.createdAtMillis
-
-private const val TRUSTED = "TRUSTED"

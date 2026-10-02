@@ -60,14 +60,16 @@ class AndroidFolderKeyStore(
     }
 
     private fun wrap(material: FolderKeyMaterial): FolderKeyEntity {
-        val nonce = ByteArray(GCM_NONCE_BYTES).also(SecureRandom()::nextBytes)
+        // The master key requires randomized encryption, so AndroidKeyStore rejects a
+        // caller-provided nonce ("Caller-provided IV not permitted") and must choose its own.
         val cipher = Cipher.getInstance(TRANSFORMATION).apply {
-            init(Cipher.ENCRYPT_MODE, masterKey(), GCMParameterSpec(GCM_TAG_BITS, nonce))
+            init(Cipher.ENCRYPT_MODE, masterKey())
             updateAAD(material.folderId.toByteArray())
         }
+        val wrapped = cipher.doFinal(material.bytes)
         return FolderKeyEntity(material.folderId, material.keyId,
-            Base64.getEncoder().encodeToString(cipher.doFinal(material.bytes)),
-            Base64.getEncoder().encodeToString(nonce), System.currentTimeMillis())
+            Base64.getEncoder().encodeToString(wrapped),
+            Base64.getEncoder().encodeToString(cipher.iv), System.currentTimeMillis())
     }
 
     private fun unwrap(entity: FolderKeyEntity): FolderKeyMaterial {
@@ -109,7 +111,6 @@ class AndroidFolderKeyStore(
         const val MASTER_ALIAS = "syncdroid-folder-key-master-v1"
         const val TRANSFORMATION = "AES/GCM/NoPadding"
         const val FOLDER_KEY_BYTES = 32
-        const val GCM_NONCE_BYTES = 12
         const val GCM_TAG_BITS = 128
     }
 }

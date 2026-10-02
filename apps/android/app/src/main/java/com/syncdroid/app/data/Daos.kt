@@ -34,7 +34,7 @@ interface MeshDao {
     @Query("SELECT COUNT(*) FROM devices WHERE groupId = :groupId AND trustState = 'TRUSTED'")
     suspend fun trustedDeviceCount(groupId: String): Int
 
-    @Query("SELECT * FROM membership_events WHERE groupId = :groupId ORDER BY createdAtMillis")
+    @Query("SELECT * FROM membership_events WHERE groupId = :groupId ORDER BY createdAtMillis, eventId")
     suspend fun membershipEvents(groupId: String): List<MembershipEventEntity>
 
     @Query("SELECT EXISTS(SELECT 1 FROM membership_events WHERE eventId = :eventId)")
@@ -70,6 +70,9 @@ interface SyncDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertFolderAnnouncement(event: FolderAnnouncementEntity): Long
 
+    @Query("SELECT EXISTS(SELECT 1 FROM folder_announcements WHERE eventId = :eventId)")
+    suspend fun hasFolderAnnouncement(eventId: String): Boolean
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertEndpoint(endpoint: SyncEndpointEntity)
 
@@ -78,6 +81,9 @@ interface SyncDao {
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertSyncExceptionEvent(event: SyncExceptionEventEntity): Long
+
+    @Query("SELECT EXISTS(SELECT 1 FROM sync_exception_events WHERE eventId = :eventId)")
+    suspend fun hasSyncExceptionEvent(eventId: String): Boolean
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertFileVersion(file: FileVersionEntity)
@@ -231,6 +237,9 @@ interface SyncDao {
     @Query("SELECT * FROM partial_transfers WHERE folderId = :folderId AND fileId = :fileId AND contentSha256 = :contentSha256 LIMIT 1")
     suspend fun partialTransfer(folderId: String, fileId: String, contentSha256: String): PartialTransferEntity?
 
+    @Query("SELECT * FROM partial_transfers WHERE updatedAtMillis < :updatedBeforeMillis")
+    suspend fun stalePartialTransfers(updatedBeforeMillis: Long): List<PartialTransferEntity>
+
     @Query("DELETE FROM partial_transfers WHERE folderId = :folderId AND fileId = :fileId AND contentSha256 = :contentSha256")
     suspend fun deletePartialTransfer(folderId: String, fileId: String, contentSha256: String)
 
@@ -266,7 +275,13 @@ interface SyncDao {
         insertSnapshotFiles(files)
         upsertFileVersions(currentFiles)
         upsertFolderIndexState(indexState)
+        // Only the latest snapshot is ever read; older ones held a full copy of the folder each.
+        deleteOlderSnapshots(snapshot.folderId, snapshot.snapshotId)
     }
+
+    /** Their files are removed by the cascading foreign key. */
+    @Query("DELETE FROM snapshots WHERE folderId = :folderId AND snapshotId != :keepSnapshotId")
+    suspend fun deleteOlderSnapshots(folderId: String, keepSnapshotId: String)
 
     @Query("SELECT * FROM snapshots WHERE folderId = :folderId ORDER BY createdAtMillis DESC LIMIT 1")
     suspend fun latestSnapshot(folderId: String): SnapshotEntity?

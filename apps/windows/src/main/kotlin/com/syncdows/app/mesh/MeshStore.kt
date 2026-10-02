@@ -1,5 +1,10 @@
 package com.syncdows.app.mesh
 
+import com.syncdroid.shared.protocol.acceptsRemovedSignerItem
+import com.syncdroid.shared.protocol.acceptsRemovedSignerMembership
+import com.syncdroid.shared.protocol.causallyLatest
+import com.syncdroid.shared.protocol.isTrustedAfter
+import com.syncdroid.shared.protocol.newestChatWithinBudget
 import com.syncdows.app.platform.WindowsAppPaths
 
 import com.syncdroid.shared.sync.IndexReceiveDecision
@@ -257,7 +262,14 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
         require(bundle.folderAnnouncements.all { it.groupId == groupId }) { "Pairing response mixes folder groups" }
         require(bundle.syncExceptionEvents.all { it.groupId == groupId }) { "Pairing response mixes exception groups" }
         require(bundle.chatMessages.all { it.groupId == groupId }) { "Pairing response mixes chat groups" }
-        bundle.membershipEvents.forEach { applyMembershipLocked(bundle.groupName, it) }
+        // Device clocks differ, so an event can sort before the one that made its signer a member.
+        var pendingMembership = bundle.membershipEvents
+            .sortedWith(compareBy(MembershipEvent::createdAtMillis, MembershipEvent::eventId))
+        while (pendingMembership.isNotEmpty()) {
+            val failed = pendingMembership.filter { skipInvalid { applyMembershipLocked(bundle.groupName, it) } == null }
+            if (failed.size == pendingMembership.size) break
+            pendingMembership = failed
+        }
         val existing = profile()
         if (existing == null) {
             val created = bundle.membershipEvents.minOf(MembershipEvent::createdAtMillis)
@@ -282,13 +294,13 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
         }
         bundle.folderAnnouncements
             .sortedWith(compareBy(FolderAnnouncement::createdAtMillis, FolderAnnouncement::eventId))
-            .forEach(::applyFolderLocked)
+            .forEach { skipInvalid { applyFolderLocked(it) } }
         bundle.syncExceptionEvents
             .sortedWith(compareBy(SyncExceptionEvent::createdAtMillis, SyncExceptionEvent::eventId))
-            .forEach(::applySyncExceptionLocked)
+            .forEach { skipInvalid { applySyncExceptionLocked(it) } }
         bundle.chatMessages
             .sortedWith(compareBy(MeshChatMessage::createdAtMillis, MeshChatMessage::messageId))
-            .forEach(::applyChatLocked)
+            .forEach { skipInvalid { applyChatLocked(it) } }
         imported
     }
 
@@ -300,7 +312,7 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
             membershipEvents(profile.groupId),
             folderAnnouncements(profile.groupId),
             syncExceptionEvents(profile.groupId),
-            chatMessages = chatMessages(profile.groupId),
+            chatMessages = newestChatWithinBudget(chatMessages(profile.groupId)) { it.body.length },
         )
     }
 
@@ -686,6 +698,23 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
             it.setString(1, value.folderId); it.setString(2, value.fileId); it.setString(3, value.contentSha256)
             it.setString(4, value.temporaryPath); it.setLong(5, value.totalSizeBytes); it.setInt(6, value.blockSizeBytes)
             it.setString(7, value.receivedBlocksBase64); it.setLong(8, value.updatedAtMillis); it.executeUpdate()
+        }
+    }
+
+    @Synchronized
+    fun stalePartialTransfers(updatedBeforeMillis: Long): List<PartialTransfer> = connection.prepareStatement(
+        """SELECT folder_id, file_id, content_sha256, temporary_path, total_size_bytes,
+                  block_size_bytes, received_blocks_base64, updated_at_millis
+           FROM partial_transfers WHERE updated_at_millis < ?""",
+    ).use { statement ->
+        statement.setLong(1, updatedBeforeMillis)
+        statement.executeQuery().use { rows ->
+            buildList {
+                while (rows.next()) add(PartialTransfer(
+                    rows.getString(1), rows.getString(2), rows.getString(3), rows.getString(4), rows.getLong(5),
+                    rows.getInt(6), rows.getString(7), rows.getLong(8),
+                ))
+            }
         }
     }
 
@@ -1129,7 +1158,8 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
             }
             decodePublicKey(event.subjectPublicKeyBase64)
         } else {
-            val signer = trusted.firstOrNull { it.deviceId == event.signerDeviceId }
+            val signer = device(event.groupId, event.signerDeviceId)
+                ?.takeIf { it.trusted || acceptsRemovedSignerMembership(event.version, removalVersions(event.groupId, it.deviceId)) }
                 ?: error("Membership signer is not trusted")
             decodePublicKey(signer.identityPublicKeyBase64)
         }
@@ -1138,9 +1168,10 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
         val existing = device(event.groupId, event.subjectDeviceId)
         when (event.eventType) {
             MembershipEventType.UpdateDeviceName -> require(
-                event.signerDeviceId == event.subjectDeviceId && existing?.trusted == true,
-            ) { "A device can only rename its own trusted identity" }
-            MembershipEventType.RemoveDevice -> require(existing?.trusted == true) { "Only a trusted device can be removed" }
+                event.signerDeviceId == event.subjectDeviceId && existing != null,
+            ) { "A device can only rename its own identity" }
+            // Two devices may remove the same peer before hearing of each other's removal.
+            MembershipEventType.RemoveDevice -> require(existing != null) { "Only a known device can be removed" }
             MembershipEventType.AddDevice -> Unit
         }
 
@@ -1153,6 +1184,15 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
             it.setString(8, event.parentEventIds.joinToString("\n")); it.setString(9, event.version.toJson())
             it.setLong(10, event.createdAtMillis); it.setString(11, event.signatureBase64); it.executeUpdate()
         }
+        // Derive the subject's state from all of its events, so arrival order cannot undo a removal.
+        val subjectEvents = membershipEvents(event.groupId).filter { it.subjectDeviceId == event.subjectDeviceId }
+        val subjectTrusted = isTrustedAfter(
+            subjectEvents.filter { it.eventType == MembershipEventType.AddDevice }.map(MembershipEvent::version),
+            subjectEvents.filter { it.eventType == MembershipEventType.RemoveDevice }.map(MembershipEvent::version),
+        )
+        val subjectName = causallyLatest(subjectEvents, MembershipEvent::version)
+            .maxWithOrNull(compareBy(MembershipEvent::createdAtMillis, MembershipEvent::eventId))
+            ?.subjectDisplayName ?: event.subjectDisplayName
         connection.prepareStatement(
             """INSERT INTO devices(group_id, device_id, display_name, identity_key, tls_key, fingerprint, trust_state, last_seen_at_millis)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -1163,9 +1203,9 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
                  trust_state = excluded.trust_state""",
         ).use {
             val key = decodePublicKey(event.subjectPublicKeyBase64)
-            it.setString(1, event.groupId); it.setString(2, event.subjectDeviceId); it.setString(3, event.subjectDisplayName)
+            it.setString(1, event.groupId); it.setString(2, event.subjectDeviceId); it.setString(3, subjectName)
             it.setString(4, event.subjectPublicKeyBase64); it.setString(5, existing?.tlsPublicKeyBase64)
-            it.setString(6, fingerprintFor(key)); it.setString(7, if (event.eventType == MembershipEventType.RemoveDevice) "REMOVED" else "TRUSTED")
+            it.setString(6, fingerprintFor(key)); it.setString(7, if (subjectTrusted) "TRUSTED" else "REMOVED")
             if (existing?.lastSeenAtMillis == null) it.setNull(8, java.sql.Types.BIGINT) else it.setLong(8, existing.lastSeenAtMillis)
             it.executeUpdate()
         }
@@ -1178,9 +1218,9 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
     private fun applyFolderLocked(event: FolderAnnouncement): Boolean {
         require(event.hasValidEventId()) { "Folder announcement is malformed" }
         if (hasFolderEvent(event.eventId)) return false
-        val signer = device(event.groupId, event.signerDeviceId)
-            ?: error("Folder announcement signer is not a mesh member")
-        require(signer.trusted) { "Folder announcement signer is not trusted" }
+        device(event.groupId, event.signerDeviceId) ?: error("Folder announcement signer is not a mesh member")
+        val signer = signerAt(event.groupId, event.signerDeviceId, event.createdAtMillis)
+            ?: error("Folder announcement signer is not trusted")
         require(event.verifySignature(decodePublicKey(signer.identityPublicKeyBase64))) {
             "Folder announcement signature is invalid"
         }
@@ -1222,6 +1262,7 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
     }
 
     private fun applyChatLocked(message: MeshChatMessage): Boolean {
+        if (hasChatMessage(message.messageId)) return false
         require(message.body.toByteArray(Charsets.UTF_8).size <= MAX_CHAT_BODY_BYTES) {
             "A chat message is too long"
         }
@@ -1230,9 +1271,9 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
         }
         message.attachment?.validateForChat(message.createdAtMillis)
         require(message.hasValidMessageId()) { "Chat message ID does not match its payload" }
-        val author = device(message.groupId, message.authorDeviceId)
-            ?: error("Chat message author is not a member of this mesh")
-        require(author.trusted) { "Chat message author is not trusted" }
+        device(message.groupId, message.authorDeviceId) ?: error("Chat message author is not a member of this mesh")
+        val author = signerAt(message.groupId, message.authorDeviceId, message.createdAtMillis)
+            ?: error("Chat message author is not trusted")
         require(message.verifySignature(decodePublicKey(author.identityPublicKeyBase64))) {
             "Chat message signature is invalid"
         }
@@ -1259,12 +1300,13 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
     }
 
     private fun applySyncExceptionLocked(event: SyncExceptionEvent): Boolean {
+        if (hasExceptionEvent(event.eventId)) return false
         require(event.hasValidEventId()) { "Exception event ID does not match its payload" }
         val folder = requireNotNull(meshFolder(event.folderId)) { "Unknown mesh folder" }
         require(folder.groupId == event.groupId) { "Exception event belongs to a different mesh" }
-        val signer = device(event.groupId, event.signerDeviceId)
-            ?: error("Exception signer is not a mesh member")
-        require(signer.trusted) { "Exception signer is not trusted" }
+        device(event.groupId, event.signerDeviceId) ?: error("Exception signer is not a mesh member")
+        val signer = signerAt(event.groupId, event.signerDeviceId, event.createdAtMillis)
+            ?: error("Exception signer is not trusted")
         require(event.verifySignature(decodePublicKey(signer.identityPublicKeyBase64))) {
             "Exception signature is invalid"
         }
@@ -1432,6 +1474,25 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
     private fun hasFolderEvent(eventId: String) = connection.prepareStatement(
         "SELECT 1 FROM folder_announcements WHERE event_id = ?",
     ).use { it.setString(1, eventId); it.executeQuery().use(ResultSet::next) }
+    private fun hasExceptionEvent(eventId: String) = connection.prepareStatement(
+        "SELECT 1 FROM sync_exception_events WHERE event_id = ?",
+    ).use { it.setString(1, eventId); it.executeQuery().use(ResultSet::next) }
+    private fun hasChatMessage(messageId: String) = connection.prepareStatement(
+        "SELECT 1 FROM chat_messages WHERE message_id = ?",
+    ).use { it.setString(1, messageId); it.executeQuery().use(ResultSet::next) }
+
+    /** A signer of a replicated item: trusted, or removed only after the item was created. */
+    private fun signerAt(groupId: String, deviceId: String, createdAtMillis: Long): TrustedDevice? {
+        val device = device(groupId, deviceId) ?: return null
+        if (device.trusted) return device
+        val removedAtMillis = removals(groupId, deviceId).maxOfOrNull(MembershipEvent::createdAtMillis)
+        return device.takeIf { acceptsRemovedSignerItem(createdAtMillis, removedAtMillis) }
+    }
+
+    private fun removals(groupId: String, deviceId: String) = membershipEvents(groupId)
+        .filter { it.subjectDeviceId == deviceId && it.eventType == MembershipEventType.RemoveDevice }
+
+    private fun removalVersions(groupId: String, deviceId: String) = removals(groupId, deviceId).map(MembershipEvent::version)
     private fun meshFolderExists(folderId: String) = connection.prepareStatement(
         "SELECT 1 FROM mesh_folders WHERE folder_id = ?",
     ).use { it.setString(1, folderId); it.executeQuery().use(ResultSet::next) }
@@ -1798,3 +1859,12 @@ private fun decodeList(value: String): List<String> = value.lines()
     .map { String(Base64.getDecoder().decode(it), Charsets.UTF_8) }
 
 private const val MAX_REPLICATED_CHAT_MESSAGES = 5_000
+
+/** Skips one invalid replicated item from a peer; SQL failures still abort the whole import. */
+private inline fun <T> skipInvalid(apply: () -> T): T? = try {
+    apply()
+} catch (_: IllegalArgumentException) {
+    null
+} catch (_: IllegalStateException) {
+    null
+}

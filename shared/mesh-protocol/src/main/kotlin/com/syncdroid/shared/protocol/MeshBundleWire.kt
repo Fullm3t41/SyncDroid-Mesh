@@ -294,3 +294,20 @@ object MeshBundleWireCodec {
     private const val MAX_STRING_BYTES = 1024 * 1024
     private const val MAX_BUNDLE_BYTES = 16 * 1024 * 1024
 }
+
+/**
+ * The newest chat messages that fit in a metadata bundle alongside its other records. Five
+ * thousand long messages would exceed the 16 MiB bundle limit and fail every session.
+ * [messages] must be oldest first.
+ */
+fun <T> newestChatWithinBudget(messages: List<T>, bodyLength: (T) -> Int): List<T> {
+    var remaining = CHAT_BUNDLE_BUDGET_BYTES
+    val kept = messages.asReversed().takeWhile { message ->
+        remaining -= CHAT_MESSAGE_OVERHEAD_BYTES + 3L * bodyLength(message)
+        remaining >= 0
+    }
+    return kept.asReversed()
+}
+
+private const val CHAT_BUNDLE_BUDGET_BYTES = 6L * 1024 * 1024
+private const val CHAT_MESSAGE_OVERHEAD_BYTES = 1_024L

@@ -5,6 +5,7 @@ import android.content.Intent
 import androidx.core.content.ContextCompat
 import com.syncdroid.app.storage.LowStorageApprovalStore
 import com.syncdroid.app.storage.StorageSyncWarning
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -84,7 +85,7 @@ object SyncServiceController {
         LowStorageApprovalStore(context).approve(
             warning.destinations.mapTo(mutableSetOf()) { it.destinationKey },
         )
-        report(storageWarning = null)
+        report(clearStorageWarning = true)
         requestRefresh(context)
     }
 
@@ -92,26 +93,29 @@ object SyncServiceController {
         mutableAppInForeground.value = inForeground
     }
 
+    /** Updates only the fields given, atomically, so one report cannot undo another's changes. */
     internal fun report(
-        running: Boolean = mutableSnapshot.value.running,
-        status: String = mutableSnapshot.value.status,
-        activePeerIds: Set<String> = mutableSnapshot.value.activePeerIds,
-        onlinePeerIds: Set<String> = mutableSnapshot.value.onlinePeerIds,
-        peerSyncProgress: Map<String, Float?> = mutableSnapshot.value.peerSyncProgress,
+        running: Boolean? = null,
+        status: String? = null,
+        activePeerIds: Set<String>? = null,
+        onlinePeerIds: Set<String>? = null,
+        peerSyncProgress: Map<String, Float?>? = null,
         syncCompleted: Boolean = false,
         policyChanged: Boolean = false,
-        storageWarning: StorageSyncWarning? = mutableSnapshot.value.storageWarning,
+        storageWarning: StorageSyncWarning? = null,
+        clearStorageWarning: Boolean = false,
     ) {
-        val current = mutableSnapshot.value
-        mutableSnapshot.value = current.copy(
-            running = running,
-            status = status,
-            activePeerIds = activePeerIds,
-            onlinePeerIds = onlinePeerIds,
-            peerSyncProgress = peerSyncProgress,
-            syncRevision = current.syncRevision + if (syncCompleted) 1 else 0,
-            policyRevision = current.policyRevision + if (policyChanged) 1 else 0,
-            storageWarning = storageWarning,
-        )
+        mutableSnapshot.update { current ->
+            current.copy(
+                running = running ?: current.running,
+                status = status ?: current.status,
+                activePeerIds = activePeerIds ?: current.activePeerIds,
+                onlinePeerIds = onlinePeerIds ?: current.onlinePeerIds,
+                peerSyncProgress = peerSyncProgress ?: current.peerSyncProgress,
+                syncRevision = current.syncRevision + if (syncCompleted) 1 else 0,
+                policyRevision = current.policyRevision + if (policyChanged) 1 else 0,
+                storageWarning = if (clearStorageWarning) null else storageWarning ?: current.storageWarning,
+            )
+        }
     }
 }

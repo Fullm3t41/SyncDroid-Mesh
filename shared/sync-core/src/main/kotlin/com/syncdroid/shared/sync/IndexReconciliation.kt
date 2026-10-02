@@ -1,6 +1,7 @@
 package com.syncdroid.shared.sync
 
 import com.syncdroid.shared.protocol.FolderIndexUpdate
+import com.syncdroid.shared.protocol.IndexedFileRecord
 
 data class IndexStateSnapshot(
     val indexEpoch: Long,
@@ -68,6 +69,53 @@ fun acknowledgeIndexContent(
     }
     return current.copy(contentAppliedSequence = sequence)
 }
+
+/**
+ * Trims index updates so their batch fits one session message, which the transport caps at
+ * 16 MiB. A trimmed update keeps a prefix of its records and ends its range at the last one kept;
+ * peers, including older versions, accept it and receive the remainder in their next session.
+ * Folders after the budget runs out wait for a later session too.
+ */
+fun fitIndexUpdates(
+    updates: List<FolderIndexUpdate>,
+    budgetBytes: Long = INDEX_BATCH_BUDGET_BYTES,
+): List<FolderIndexUpdate> {
+    var remaining = budgetBytes
+    val fitted = mutableListOf<FolderIndexUpdate>()
+    for (update in updates) {
+        var used = UPDATE_OVERHEAD_BYTES + 3L * update.folderId.length
+        var kept = 0
+        for (record in update.files) {
+            val size = estimatedRecordBytes(record)
+            // Always make progress: the first folder sends at least one record.
+            if (used + size > remaining && (kept > 0 || fitted.isNotEmpty())) break
+            used += size
+            kept++
+        }
+        if (kept == update.files.size && used <= remaining) {
+            fitted += update
+            remaining -= used
+            continue
+        }
+        if (kept > 0) fitted += update.copy(files = update.files.take(kept), lastSequence = update.files[kept - 1].sequence)
+        break
+    }
+    return fitted
+}
+
+/** An upper bound on a record's encoded size: strings take at most three bytes per UTF-16 unit. */
+private fun estimatedRecordBytes(record: IndexedFileRecord): Long =
+    RECORD_OVERHEAD_BYTES +
+        3L * (record.relativePath.length + record.fileId.length + record.originDeviceId.length) +
+        record.version.counters.keys.sumOf { 3L * it.length + VERSION_ENTRY_OVERHEAD_BYTES } +
+        record.blocks.sumOf { BLOCK_OVERHEAD_BYTES + 3L * it.sha256.length }
+
+/** Half the transport limit, leaving room for the other fields of the session message. */
+const val INDEX_BATCH_BUDGET_BYTES = 8L * 1024 * 1024
+private const val UPDATE_OVERHEAD_BYTES = 64L
+private const val RECORD_OVERHEAD_BYTES = 512L
+private const val VERSION_ENTRY_OVERHEAD_BYTES = 32L
+private const val BLOCK_OVERHEAD_BYTES = 32L
 
 fun validateFolderIndexUpdate(update: FolderIndexUpdate) {
     require(update.indexEpoch != 0L && update.previousSequence >= 0 && update.lastSequence >= update.previousSequence)

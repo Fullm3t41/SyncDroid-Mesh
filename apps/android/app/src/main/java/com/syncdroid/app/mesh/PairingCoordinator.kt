@@ -103,6 +103,10 @@ class PairingCoordinator(
                 "Pairing response does not authorize this device"
             }
             MeshReplicationRepository(database, identity).receive(bundle)
+            // Receiving skips events it cannot verify, so confirm this device's addition was accepted.
+            require(database.meshDao().getDevice(completion.groupId, identity.deviceId)?.trustState == "TRUSTED") {
+                "Pairing response does not authorize this device"
+            }
             val keyStore = AndroidFolderKeyStore(appContext, database.syncDao())
             completion.folderKeys.forEach { wrapped ->
                 val key = PairingFolderKeyWrapper.unwrap(wrapped, result.sessionKey)

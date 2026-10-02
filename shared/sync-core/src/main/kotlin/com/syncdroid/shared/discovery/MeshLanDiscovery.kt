@@ -17,6 +17,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -116,9 +117,12 @@ class MeshLanDiscovery(
         val deviceId = parts[2].takeIf { it != localDeviceId && it.matches(SAFE_ID) } ?: return
         val tcpPort = parts[3].toIntOrNull()?.takeIf { it in 1..65_535 } ?: return
         val protocol = parts[4].toIntOrNull()?.takeIf { it > 0 } ?: return
-        mutablePeers.value = mutablePeers.value + (
-            deviceId to LanMeshPeer(deviceId, source, tcpPort, protocol, System.currentTimeMillis())
-        )
+        val peer = LanMeshPeer(deviceId, source, tcpPort, protocol, System.currentTimeMillis())
+        // The receive loop and the announcement timer both update the map, so update it atomically.
+        // Anyone on the network can send announcements, so the map is capped at a mesh-sized limit.
+        mutablePeers.update { current ->
+            if (deviceId !in current && current.size >= MAX_PEERS) current else current + (deviceId to peer)
+        }
     }
 
     private fun announcement(port: Int) = "$ANNOUNCEMENT|$groupTag|$localDeviceId|$port|$PROTOCOL_MAJOR"
@@ -133,7 +137,7 @@ class MeshLanDiscovery(
 
     private fun pruneExpired() {
         val cutoff = System.currentTimeMillis() - PEER_EXPIRY_MILLIS
-        mutablePeers.value = mutablePeers.value.filterValues { it.lastSeenAtMillis >= cutoff }
+        mutablePeers.update { current -> current.filterValues { it.lastSeenAtMillis >= cutoff } }
     }
 
     @Synchronized
@@ -152,6 +156,7 @@ class MeshLanDiscovery(
         const val RECEIVE_TIMEOUT_MILLIS = 1_000
         const val ANNOUNCEMENT_INTERVAL_MILLIS = 1_000L
         const val PEER_EXPIRY_MILLIS = 15_000L
+        const val MAX_PEERS = 256
         val SAFE_ID = Regex("[A-Za-z0-9_-]{8,128}")
     }
 }

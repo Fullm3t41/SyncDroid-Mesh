@@ -3,6 +3,7 @@ package com.syncdroid.shared.cloud
 import java.awt.Desktop
 import java.net.InetAddress
 import java.net.ServerSocket
+import java.net.SocketTimeoutException
 import java.net.URI
 import java.net.URLDecoder
 import java.net.URLEncoder
@@ -33,6 +34,8 @@ data class CloudOAuthClient(
     val authorizationEndpoint: URI,
     val tokenEndpoint: URI,
     val scopes: List<String>,
+    /** Google issues Desktop app clients a secret it requires on token requests; it is not confidential. */
+    val clientSecret: String? = null,
 ) {
     init { require(clientId.isNotBlank()) { "${provider.displayName} OAuth client ID is not configured" } }
 }
@@ -43,11 +46,7 @@ object CloudOAuthConfiguration {
             CloudProvider.GOOGLE_DRIVE -> "SYNCDROID_GOOGLE_CLIENT_ID"
             CloudProvider.ONE_DRIVE -> "SYNCDROID_MICROSOFT_CLIENT_ID"
         }
-        val clientId = System.getProperty(key.lowercase().replace('_', '.'))
-            ?.takeIf(String::isNotBlank)
-            ?: System.getenv(key)?.takeIf(String::isNotBlank)
-            ?: bundledClientId(key)
-            ?: return null
+        val clientId = setting(key) ?: return null
         return when (provider) {
             CloudProvider.GOOGLE_DRIVE -> CloudOAuthClient(
                 provider,
@@ -55,6 +54,7 @@ object CloudOAuthConfiguration {
                 URI("https://accounts.google.com/o/oauth2/v2/auth"),
                 URI("https://oauth2.googleapis.com/token"),
                 listOf("https://www.googleapis.com/auth/drive.file"),
+                setting("SYNCDROID_GOOGLE_CLIENT_SECRET"),
             )
             CloudProvider.ONE_DRIVE -> CloudOAuthClient(
                 provider,
@@ -65,6 +65,11 @@ object CloudOAuthConfiguration {
             )
         }
     }
+
+    private fun setting(key: String): String? = System.getProperty(key.lowercase().replace('_', '.'))
+        ?.takeIf(String::isNotBlank)
+        ?: System.getenv(key)?.takeIf(String::isNotBlank)
+        ?: bundledClientId(key)
 
     private fun bundledClientId(key: String): String? = runCatching {
         val properties = Properties()
@@ -166,11 +171,14 @@ class DesktopCloudOAuth(
     suspend fun connect(provider: CloudProvider): CloudOAuthTokens = withContext(Dispatchers.IO) {
         val client = configuration(provider)
             ?: error("${provider.displayName} is not configured in this build. Add its OAuth desktop client ID first.")
-        ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).use { callback ->
-            callback.soTimeout = AUTH_TIMEOUT_MILLIS.toInt()
+        ServerSocket(0, CALLBACK_BACKLOG, InetAddress.getByName("127.0.0.1")).use { callback ->
             // Entra's desktop registration uses the exact http://localhost redirect and
             // ignores its ephemeral port. Google documents the literal IPv4 loopback form.
             val callbackHost = if (provider == CloudProvider.ONE_DRIVE) "localhost" else "127.0.0.1"
+            // A browser may resolve localhost to the IPv6 loopback first, so listen there as well.
+            val ipv6Callback = if (callbackHost != "localhost") null else runCatching {
+                ServerSocket(callback.localPort, CALLBACK_BACKLOG, InetAddress.getByName("::1"))
+            }.getOrNull()
             val redirect = "http://$callbackHost:${callback.localPort}"
             val verifier = randomUrlToken(64)
             val challenge = base64Url(MessageDigest.getInstance("SHA-256").digest(verifier.toByteArray()))
@@ -190,7 +198,11 @@ class DesktopCloudOAuth(
                 }
             }
             openBrowser(URI(client.authorizationEndpoint.toString() + "?" + form(query)))
-            val callbackValues = receiveCallback(callback)
+            val callbackValues = try {
+                receiveOAuthCallback(listOfNotNull(callback, ipv6Callback), System.currentTimeMillis() + AUTH_TIMEOUT_MILLIS)
+            } finally {
+                ipv6Callback?.close()
+            }
             require(callbackValues["state"] == state) { "Cloud sign-in response could not be verified" }
             callbackValues["error"]?.let { error(it.replace('_', ' ')) }
             val code = callbackValues["code"] ?: error("Cloud sign-in did not return an authorization code")
@@ -216,6 +228,7 @@ class DesktopCloudOAuth(
             "redirect_uri" to redirect,
             "grant_type" to "authorization_code",
         )
+        client.clientSecret?.let { body["client_secret"] = it }
         return tokenRequest(client, body, previousRefreshToken = null)
     }
 
@@ -226,6 +239,7 @@ class DesktopCloudOAuth(
             "grant_type" to "refresh_token",
         )
         if (client.provider == CloudProvider.ONE_DRIVE) values["scope"] = client.scopes.joinToString(" ")
+        client.clientSecret?.let { values["client_secret"] = it }
         return tokenRequest(client, values, previous.refreshToken)
     }
 
@@ -254,26 +268,6 @@ class DesktopCloudOAuth(
         return CloudOAuthTokens(access, refresh, expiresAt, scopes)
     }
 
-    private fun receiveCallback(server: ServerSocket): Map<String, String> = server.accept().use { socket ->
-        val reader = socket.getInputStream().bufferedReader()
-        val requestLine = reader.readLine().orEmpty()
-        while (!reader.readLine().isNullOrEmpty()) Unit
-        val target = requestLine.split(' ').getOrNull(1) ?: error("Invalid cloud sign-in callback")
-        val query = URI(target).rawQuery.orEmpty().split('&').filter(String::isNotBlank).associate { pair ->
-            val parts = pair.split('=', limit = 2)
-            decode(parts[0]) to decode(parts.getOrElse(1) { "" })
-        }
-        val success = query["error"] == null
-        val message = if (success) "Cloud account connected. You can close this browser tab." else "Cloud account connection was cancelled."
-        val html = "<!doctype html><meta charset=utf-8><title>SyncDroid-Mesh</title><body style='font-family:system-ui;padding:3rem'><h2>$message</h2></body>"
-        val bytes = html.toByteArray()
-        socket.getOutputStream().buffered().use { output ->
-            output.write("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n".toByteArray())
-            output.write(bytes)
-        }
-        query
-    }
-
     private fun form(values: Map<String, String>) = values.entries.joinToString("&") { (key, value) ->
         "${encode(key)}=${encode(value)}"
     }
@@ -281,7 +275,65 @@ class DesktopCloudOAuth(
     private fun randomUrlToken(bytes: Int) = base64Url(ByteArray(bytes).also(SecureRandom()::nextBytes))
     private fun base64Url(value: ByteArray) = Base64.getUrlEncoder().withoutPadding().encodeToString(value)
     private fun encode(value: String) = URLEncoder.encode(value, StandardCharsets.UTF_8)
-    private fun decode(value: String) = URLDecoder.decode(value, StandardCharsets.UTF_8)
 
-    private companion object { const val AUTH_TIMEOUT_MILLIS = 5 * 60 * 1_000L }
+    private companion object {
+        const val AUTH_TIMEOUT_MILLIS = 5 * 60 * 1_000L
+        const val CALLBACK_BACKLOG = 16
+    }
 }
+
+/**
+ * Waits for the browser's sign-in redirect. Browsers also open speculative connections that send
+ * nothing, and ask for /favicon.ico, so each connection is read with its own short timeout and any
+ * request without an OAuth response is answered and skipped instead of ending the sign-in.
+ */
+internal fun receiveOAuthCallback(servers: List<ServerSocket>, deadlineMillis: Long): Map<String, String> {
+    servers.forEach { it.soTimeout = CALLBACK_ACCEPT_POLL_MILLIS }
+    while (System.currentTimeMillis() < deadlineMillis) {
+        for (server in servers) {
+            val socket = try {
+                server.accept()
+            } catch (_: SocketTimeoutException) {
+                continue
+            }
+            socket.use { connection ->
+                connection.soTimeout = CALLBACK_READ_TIMEOUT_MILLIS
+                val query = runCatching { readCallbackQuery(connection) }.getOrNull()
+                if (query != null && ("state" in query || "error" in query)) {
+                    val message = if (query["error"] == null) {
+                        "Cloud account connected. You can close this browser tab."
+                    } else {
+                        "Cloud account connection was cancelled."
+                    }
+                    runCatching { respond(connection, "200 OK", message) }
+                    return query
+                }
+                runCatching { respond(connection, "404 Not Found", "Not found") }
+            }
+        }
+    }
+    error("Cloud sign-in timed out")
+}
+
+private fun readCallbackQuery(socket: java.net.Socket): Map<String, String>? {
+    val reader = socket.getInputStream().bufferedReader()
+    val requestLine = reader.readLine() ?: return null
+    while (!reader.readLine().isNullOrEmpty()) Unit
+    val target = requestLine.split(' ').getOrNull(1) ?: return null
+    return URI(target).rawQuery.orEmpty().split('&').filter(String::isNotBlank).associate { pair ->
+        val parts = pair.split('=', limit = 2)
+        URLDecoder.decode(parts[0], StandardCharsets.UTF_8) to URLDecoder.decode(parts.getOrElse(1) { "" }, StandardCharsets.UTF_8)
+    }
+}
+
+private fun respond(socket: java.net.Socket, status: String, message: String) {
+    val html = "<!doctype html><meta charset=utf-8><title>SyncDroid-Mesh</title><body style='font-family:system-ui;padding:3rem'><h2>$message</h2></body>"
+    val bytes = html.toByteArray()
+    socket.getOutputStream().buffered().use { output ->
+        output.write("HTTP/1.1 $status\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n".toByteArray())
+        output.write(bytes)
+    }
+}
+
+private const val CALLBACK_ACCEPT_POLL_MILLIS = 250
+private const val CALLBACK_READ_TIMEOUT_MILLIS = 10_000

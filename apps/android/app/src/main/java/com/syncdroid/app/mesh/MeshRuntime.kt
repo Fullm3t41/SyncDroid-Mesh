@@ -18,6 +18,7 @@ import java.time.ZonedDateTime
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -60,6 +61,8 @@ sealed interface MeshRuntimeEvent {
         val reason: String,
         val storageWarning: StorageSyncWarning? = null,
     ) : MeshRuntimeEvent
+    /** A started session ended without syncing because another session with the peer won, or the runtime stopped. */
+    data class SyncInterrupted(val peerId: String, val peerName: String) : MeshRuntimeEvent
     data class ChatMessagesReceived(
         val count: Int,
         val authorName: String,
@@ -245,8 +248,12 @@ class MeshRuntime(
     ) {
         if (peer.deviceId in activePeers || peerJobs[peer.deviceId]?.isActive == true) return
         peerJobs[peer.deviceId] = scope.launch {
+            val startedAtMillis = System.currentTimeMillis()
+            var collisions = 0
             do {
                 if (peer.deviceId in activePeers) break
+                // A colliding session that won the race may already have synced with this peer.
+                if ((lastSessionAtMillis[peer.deviceId] ?: 0L) >= startedAtMillis) break
                 val endpoint = peerEndpoints[peer.deviceId] ?: peer
                 val attempt = runCatching {
                     client.connect(endpoint.address, endpoint.port).use { connection ->
@@ -254,22 +261,29 @@ class MeshRuntime(
                         require(connection.peer.deviceId == peer.deviceId) {
                             "NSD identity does not match mesh identity"
                         }
-                        runSessionOnce(connection, alreadyAuthenticated = true)
+                        runSessionOnce(connection, outbound = true)
                     }
                 }
+                val busy = attempt.exceptionOrNull() is PeerSessionBusyException
                 attempt.exceptionOrNull()?.let { error ->
-                    if (error is PeerSessionBusyException) {
+                    if (busy) {
                         Log.d(TAG, "Peer ${peer.deviceId.take(8)} already has a session; retrying after collision backoff")
                     } else {
                         Log.w(TAG, "Could not connect to ${peer.deviceId.take(8)} at ${endpoint.address.hostAddress}:${endpoint.port}", error)
                     }
                 }
                 val connected = attempt.isSuccess
-                if (connected || !retry) break
-                val retryDelay = if (attempt.exceptionOrNull() is PeerSessionBusyException) {
-                    if (identity.deviceId < peer.deviceId) LOWER_ID_COLLISION_RETRY_MILLIS
+                // A collision proves the peer is reachable, so retry it even for one-shot propagation.
+                if (connected || (!retry && !busy)) break
+                val retryDelay = if (busy) {
+                    val base = if (identity.deviceId < peer.deviceId) LOWER_ID_COLLISION_RETRY_MILLIS
                     else HIGHER_ID_COLLISION_RETRY_MILLIS
+                    // Back off while the peer keeps a stale slot open, e.g. queued behind another transfer.
+                    val backoff = base shl collisions.coerceAtMost(MAX_COLLISION_BACKOFF_SHIFT)
+                    collisions++
+                    backoff.coerceAtMost(CONNECTION_RETRY_MILLIS)
                 } else {
+                    collisions = 0
                     CONNECTION_RETRY_MILLIS
                 }
                 delay(retryDelay)
@@ -289,11 +303,12 @@ class MeshRuntime(
         }
     }
 
+    /** Outbound connections are authenticated by the caller before their discovered identity is checked. */
     private suspend fun runSessionOnce(
         connection: AuthenticatedPeerConnection,
-        alreadyAuthenticated: Boolean = false,
+        outbound: Boolean = false,
     ) {
-        if (!alreadyAuthenticated) StablePeerAuthenticator(database, identity, groupId).authenticate(connection)
+        if (!outbound) StablePeerAuthenticator(database, identity, groupId).authenticate(connection)
         val admitted = synchronized(sessionStateLock) {
             acceptingDiscoveredSessions && activePeers.add(connection.peer.deviceId)
         }
@@ -301,10 +316,17 @@ class MeshRuntime(
             runCatching {
                 connection.send(MeshSessionCodec.encode(MeshSessionMessage.Error(SESSION_BUSY_REASON)))
             }
+            // Closing with the peer's opening message unread resets the connection, and Windows
+            // then discards the reply before the peer can read it. Wait for the peer to hang up first.
+            connection.drainUntilClosed(BUSY_DRAIN_TIMEOUT_MILLIS)
+            // When both devices dial at once, the peer may reject the session this device kept,
+            // so the dialler backs off and retries rather than assuming the other session syncs.
+            if (outbound) throw PeerSessionBusyException()
             return
         }
         val peerName = database.meshDao().getDevice(groupId, connection.peer.deviceId)?.displayName
             ?: connection.peer.deviceId.take(8)
+        var filesSynced = false
         try {
             onEvent(MeshRuntimeEvent.SyncStarted(connection.peer.deviceId, peerName))
             val incomingTransferred = AtomicLong(0L)
@@ -368,17 +390,27 @@ class MeshRuntime(
                 syncedFolders,
                 result.storageWarning,
             ))
+            filesSynced = true
             session.exchangeUpdates(connection)
         } catch (error: PeerSessionBusyException) {
             Log.d(TAG, "Concurrent session with $peerName was superseded")
+            onEvent(MeshRuntimeEvent.SyncInterrupted(connection.peer.deviceId, peerName))
+            throw error
+        } catch (error: CancellationException) {
+            if (!filesSynced) onEvent(MeshRuntimeEvent.SyncInterrupted(connection.peer.deviceId, peerName))
             throw error
         } catch (error: Throwable) {
-            Log.e(TAG, "Mesh sync with $peerName failed", error)
-            onEvent(MeshRuntimeEvent.SyncFailed(
-                connection.peer.deviceId,
-                peerName,
-                error.message ?: "Unknown sync error",
-            ))
+            if (filesSynced) {
+                // Files are already in sync; only the optional update exchange that follows ended early.
+                Log.w(TAG, "Update exchange with $peerName ended early", error)
+            } else {
+                Log.e(TAG, "Mesh sync with $peerName failed", error)
+                onEvent(MeshRuntimeEvent.SyncFailed(
+                    connection.peer.deviceId,
+                    peerName,
+                    error.message ?: "Unknown sync error",
+                ))
+            }
             throw error
         } finally {
             synchronized(sessionStateLock) { activePeers.remove(connection.peer.deviceId) }
@@ -403,6 +435,8 @@ class MeshRuntime(
         const val CONNECTION_RETRY_MILLIS = 5_000L
         const val LOWER_ID_COLLISION_RETRY_MILLIS = 150L
         const val HIGHER_ID_COLLISION_RETRY_MILLIS = 750L
+        const val MAX_COLLISION_BACKOFF_SHIFT = 5
+        const val BUSY_DRAIN_TIMEOUT_MILLIS = 2_000L
         const val PROPAGATION_COALESCE_MILLIS = 300L
         const val ROUTING_SETTLE_MILLIS = 750L
         const val ROUTING_FANOUT = 2

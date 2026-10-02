@@ -103,8 +103,10 @@ internal class DesktopCloudFolderTransfer(
         val folder = store.configuredFolders(profile.groupId, identity.deviceId).firstOrNull { it.folderId == folderId }
             ?: return CloudTransferResult()
         val root = Path.of(requireNotNull(folder.localPath)).toAbsolutePath().normalize()
+        // A folder on an unplugged drive waits until it is available again.
+        if (!Files.isDirectory(root)) return CloudTransferResult()
         val engine = FileSyncEngine(store, identity, profile)
-        engine.scanConfiguredFolders()
+        engine.scanConfiguredFolder(folderId)
         val key = folderKeys.getOrCreate(folderId)
         val syncRootId = remote.ensureFolder(remote.rootId, "SyncDroid")
         val folderRootId = remote.ensureFolder(syncRootId, folder.displayName)
@@ -113,15 +115,19 @@ internal class DesktopCloudFolderTransfer(
 
         val publishers = store.devices(profile.groupId)
             .filter { it.trusted && it.deviceId != identity.deviceId }
-            .map(TrustedDevice::deviceId)
-        publishers.forEach { publisherId ->
+        publishers.forEach { publisher ->
+            val publisherId = publisher.deviceId
+            val publisherKey = decodePublicKey(publisher.identityPublicKeyBase64)
             val manifests = folderKeys.all(folderId).mapNotNull { candidateKey ->
                 val item = remoteItems[CloudEncryptedObjects.manifestName(candidateKey, publisherId)] ?: return@mapNotNull null
                 require(item.sizeBytes in 1..(64L * 1024 * 1024 + 1024)) { "Cloud manifest is too large" }
                 val temporary = Files.createTempFile(store.storageDirectory, "cloud-manifest-", ".sdenc")
                 try {
                     remote.download(item.id, temporary)
-                    candidateKey to CloudEncryptedObjects.decryptManifest(candidateKey, publisherId, Files.readAllBytes(temporary))
+                    // An unsigned or forged manifest is skipped rather than stopping this folder's sync.
+                    runCatching {
+                        candidateKey to CloudEncryptedObjects.decryptManifest(candidateKey, publisherId, Files.readAllBytes(temporary), publisherKey)
+                    }.getOrNull()
                 } finally { Files.deleteIfExists(temporary) }
             }
             val (sourceKey, manifest) = manifests.maxByOrNull { it.second.publishedAtMillis } ?: return@forEach
@@ -175,7 +181,9 @@ internal class DesktopCloudFolderTransfer(
                                 transferredBytes = result.transferredBytes + plan.remote.sizeBytes,
                             )
                         }
-                        engine.markRemoteApplied(publisherId, plan.remote, acknowledge = !acknowledgementBlocked)
+                        if (plan.conflictResolution != null) {
+                            store.finalizeConflictResolution(plan.conflictResolution, plan.remote, identity.deviceId)
+                        } else engine.markRemoteApplied(publisherId, plan.remote, acknowledge = !acknowledgementBlocked)
                     }
                 }
             }
@@ -203,7 +211,7 @@ internal class DesktopCloudFolderTransfer(
             }
         }
         val manifest = CloudFolderManifest(folderId, folder.displayName, identity.deviceId, System.currentTimeMillis(), current, publisherScopedFiles = true)
-        val manifestBytes = CloudEncryptedObjects.encryptManifest(key, manifest)
+        val manifestBytes = CloudEncryptedObjects.encryptManifest(key, manifest, identity::sign)
         val manifestFile = Files.createTempFile(store.storageDirectory, "cloud-publish-", ".sdenc")
         try {
             Files.write(manifestFile, manifestBytes)

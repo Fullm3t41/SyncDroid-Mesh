@@ -1,0 +1,79 @@
+name: Cross-platform checks
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches-ignore: [main, updates]
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: apps/android
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
+        with:
+          distribution: corretto
+          java-version: "17"
+          cache: gradle
+      - name: Test and build SyncDroid-Mesh
+        run: ./gradlew --no-daemon testDebugUnitTest assembleDebug
+
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
+        with:
+          distribution: corretto
+          java-version: "17"
+          cache: gradle
+      - name: Test the updater script
+        run: python3 -m unittest discover -s apps/macos/installer/tests -v
+      - name: Test and build SyncTosh
+        working-directory: apps/macos
+        run: ./gradlew --no-daemon test
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: apps/windows
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
+        with:
+          distribution: corretto
+          java-version: "17"
+          cache: gradle
+      - name: Test and build SyncDows
+        shell: pwsh
+        run: |
+          .\gradlew.bat --no-daemon test
+          if ($LASTEXITCODE -ne 0) { throw "Gradle tests failed with exit code $LASTEXITCODE" }
+
+  shared:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: shared
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
+        with:
+          distribution: corretto
+          java-version: "17"
+          cache: gradle
+      - name: Test shared protocol and sync core
+        run: ./gradlew --no-daemon test

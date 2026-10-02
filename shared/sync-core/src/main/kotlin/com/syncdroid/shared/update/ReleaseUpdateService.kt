@@ -107,7 +107,7 @@ interface MeshUpdateCache {
     fun desiredAsset(): UpdateAssetDescriptor?
     fun desiredAsset(remoteAssets: List<UpdateAssetDescriptor>): UpdateAssetDescriptor? =
         desiredAsset()?.takeIf(remoteAssets::contains)
-    fun partialSize(sha256: String): Long
+    suspend fun partialSize(sha256: String): Long
     suspend fun readChunk(sha256: String, offset: Long, maxBytes: Int): ByteArray?
     suspend fun writeChunk(asset: UpdateAssetDescriptor, offset: Long, bytes: ByteArray)
 }
@@ -138,8 +138,8 @@ class ReleaseUpdateService(
     private val mutableSeedState = MutableStateFlow(OfflineSeedState(seedManifest?.manifest?.version))
     val seedState: StateFlow<OfflineSeedState> = mutableSeedState.asStateFlow()
 
-    @Volatile
-    private var pendingManifestDescriptor: UpdateAssetDescriptor? = null
+    /** Signed manifests offered by peers, one per concurrent exchange. */
+    private val pendingManifestDescriptors = ConcurrentHashMap.newKeySet<UpdateAssetDescriptor>()
 
     init {
         signedManifest?.let(::promoteCompleteSeed)
@@ -187,7 +187,7 @@ class ReleaseUpdateService(
     suspend fun downloadUpdate() = operationMutex.withLock {
         val selectedManifest = signedManifest?.manifest ?: return@withLock
         if (!isNewerVersion(selectedManifest.version, currentVersion)) return@withLock
-        val asset = selectedManifest.assetFor(platform)
+        val asset = selectedManifest.assetOrNull(platform) ?: return@withLock
         if (isComplete(selectedManifest.version, asset)) {
             mutableState.value = UpdateState.Ready(
                 currentVersion, selectedManifest, asset, assetPath(selectedManifest.version, asset), UpdateSource.Cache,
@@ -305,7 +305,8 @@ class ReleaseUpdateService(
     override fun desiredAsset(): UpdateAssetDescriptor? {
         val current = signedManifest?.manifest ?: return null
         if (!isNewerVersion(current.version, currentVersion)) return null
-        val asset = current.assetFor(platform)
+        // A release can ship for some platforms only; there is then nothing to fetch here.
+        val asset = current.assetOrNull(platform) ?: return null
         return asset.descriptor(current.version).takeUnless { isComplete(current.version, asset) }
     }
 
@@ -317,14 +318,19 @@ class ReleaseUpdateService(
             .filter { isNewerVersion(it.releaseVersion, baseline) }
             .maxWithOrNull(compareBy { SemanticVersion.parse(it.releaseVersion) })
         if (remoteManifest != null) {
-            pendingManifestDescriptor = remoteManifest
+            pendingManifestDescriptors += remoteManifest
             return remoteManifest
         }
         return desiredAsset()?.takeIf(remoteAssets::contains)
     }
 
-    override fun partialSize(sha256: String): Long {
-        val pendingManifest = pendingManifestDescriptor?.takeIf { it.sha256 == sha256 }
+    // Finishing a complete partial file must not race a GitHub download writing the same file.
+    override suspend fun partialSize(sha256: String): Long = operationMutex.withLock {
+        withContext(Dispatchers.IO) { partialSizeLocked(sha256) }
+    }
+
+    private fun partialSizeLocked(sha256: String): Long {
+        val pendingManifest = pendingManifestDescriptors.firstOrNull { it.sha256 == sha256 }
         if (pendingManifest != null) return partialManifestSize(pendingManifest)
 
         val selected = signedManifest ?: return 0L
@@ -353,12 +359,12 @@ class ReleaseUpdateService(
         require(maxBytes in 1..MeshUpdateExchange.UPDATE_CHUNK_BYTES && offset >= 0)
         val envelope = signed.envelopeBytes()
         if (SignedReleaseManifest.sha256(envelope) == sha256) {
-            if (offset !in 0..envelope.size.toLong()) return@withContext null
+            if (offset !in 0 until envelope.size.toLong()) return@withContext null
             return@withContext envelope.copyOfRange(offset.toInt(), (offset + maxBytes).coerceAtMost(envelope.size.toLong()).toInt())
         }
         val asset = signed.manifest.assets.firstOrNull { it.sha256 == sha256 } ?: return@withContext null
         val path = assetPath(signed.manifest.version, asset)
-        if (!isComplete(signed.manifest.version, asset) || offset !in 0..asset.sizeBytes) return@withContext null
+        if (!isComplete(signed.manifest.version, asset) || offset !in 0 until asset.sizeBytes) return@withContext null
         Files.newByteChannel(path, StandardOpenOption.READ).use { channel ->
             channel.position(offset)
             val remaining = (asset.sizeBytes - offset).coerceAtMost(maxBytes.toLong()).toInt()
@@ -528,7 +534,7 @@ class ReleaseUpdateService(
     }
 
     private fun writeManifestChunk(asset: UpdateAssetDescriptor, offset: Long, bytes: ByteArray) {
-        require(asset == pendingManifestDescriptor) { "Peer offered an unexpected signed manifest" }
+        require(asset in pendingManifestDescriptors) { "Peer offered an unexpected signed manifest" }
         require(asset.sizeBytes in 1..SignedReleaseManifest.MAX_ENVELOPE_BYTES.toLong()) { "Signed manifest is too large" }
         val partial = manifestPartialPath(asset.sha256)
         Files.createDirectories(partial.parent)
@@ -574,7 +580,7 @@ class ReleaseUpdateService(
         val candidate = SignedReleaseManifest.decodeEnvelope(bytes, trustedPublicKeyBase64)
         require(candidate.manifest.version == asset.releaseVersion) { "Peer manifest version does not match its inventory" }
         acceptSignedManifest(candidate)
-        pendingManifestDescriptor = null
+        pendingManifestDescriptors -= asset
         Files.deleteIfExists(partial)
         refreshStateFromCache(UpdateSource.Mesh)
     }

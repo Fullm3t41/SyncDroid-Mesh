@@ -1,5 +1,6 @@
 package com.syncdroid.app.sync
 
+import com.syncdroid.shared.sync.isSyncIgnoredPath
 import androidx.room.withTransaction
 import com.syncdroid.app.data.ConflictEntity
 import com.syncdroid.app.data.FileVersionEntity
@@ -24,6 +25,7 @@ data class FileSyncPlan(
 
 fun decideFileSync(local: FileVersionEntity?, remote: RemoteFileVersionEntity): Pair<FileSyncAction, String> {
     require(!remote.purgeRecovery || remote.deleted) { "Recovery purge requires a deletion" }
+    if (isSyncIgnoredPath(remote.relativePath)) return FileSyncAction.Nothing to "Temporary and system files are not synced"
     if (remote.purgeRecovery && local?.deleted != false && local?.purgeRecovery != true &&
         (local == null || VersionVector.fromJson(local.versionVectorJson).relationTo(VersionVector.fromJson(remote.versionVectorJson)) != com.syncdroid.shared.protocol.CausalRelation.After)) {
         return FileSyncAction.DownloadRemote to "Removing recovery copies for a permanent deletion"
@@ -212,7 +214,7 @@ class RemoteIndexRepository(
         indexStates.acknowledgeApplied(remote.folderId, remoteDeviceId, remoteState.indexEpoch, remote.remoteSequence)
     }
 
-    private suspend fun recordConflict(folderId: String, local: FileVersionEntity?, remote: RemoteFileVersionEntity) {
+    suspend fun recordConflict(folderId: String, local: FileVersionEntity?, remote: RemoteFileVersionEntity) {
         val conflictKey = "$folderId\u0000${remote.relativePath}\u0000${local?.contentSha256.orEmpty()}\u0000${remote.deviceId}\u0000${remote.contentSha256}"
         syncDao.upsertConflict(
             ConflictEntity(

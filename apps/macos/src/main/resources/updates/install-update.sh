@@ -36,8 +36,12 @@ for ((attempt=0; attempt<480; attempt++)); do
     if ! kill -0 "$ui_pid" 2>/dev/null && { [ "$worker_pid" -eq 0 ] || ! kill -0 "$worker_pid" 2>/dev/null; }; then break; fi
     sleep 0.25
 done
-! kill -0 "$ui_pid" 2>/dev/null
-[ "$worker_pid" -eq 0 ] || ! kill -0 "$worker_pid" 2>/dev/null
+# Abort explicitly: set -e ignores the status of a command negated with `!`.
+if kill -0 "$ui_pid" 2>/dev/null; then echo "SyncTosh is still running" >&2; exit 1; fi
+if [ "$worker_pid" -ne 0 ] && kill -0 "$worker_pid" 2>/dev/null; then
+    echo "SyncTosh background sync is still running" >&2
+    exit 1
+fi
 mkdir "$mount"
 /usr/bin/hdiutil attach "$image" -readonly -nobrowse -mountpoint "$mount" -quiet
 mounted=1

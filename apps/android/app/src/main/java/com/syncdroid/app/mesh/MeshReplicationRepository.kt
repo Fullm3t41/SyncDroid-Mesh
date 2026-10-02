@@ -6,6 +6,9 @@ import com.syncdroid.app.data.SyncDroidDatabase
 import com.syncdroid.app.data.SyncExceptionEventEntity
 import com.syncdroid.app.sync.FolderExceptionRepository
 import com.syncdroid.app.sync.VersionVector
+import android.util.Log
+import com.syncdroid.shared.protocol.newestChatWithinBudget
+import kotlinx.coroutines.CancellationException
 import org.json.JSONArray
 
 class MeshReplicationRepository(
@@ -25,9 +28,9 @@ class MeshReplicationRepository(
         membershipEvents = meshDao.membershipEvents(groupId).map(MembershipEventEntity::toDomain),
         folderAnnouncements = syncDao.folderAnnouncements(groupId).map(FolderAnnouncementEntity::toDomain),
         syncExceptionEvents = syncDao.syncExceptionEvents(groupId).map(SyncExceptionEventEntity::toDomain),
-        chatMessages = chatDao.recentMessages(groupId, MAX_REPLICATED_CHAT_MESSAGES)
-            .asReversed()
-            .map { it.toDomain() },
+        chatMessages = newestChatWithinBudget(
+            chatDao.recentMessages(groupId, MAX_REPLICATED_CHAT_MESSAGES).asReversed().map { it.toDomain() },
+        ) { it.body.length },
     )
 
     suspend fun receive(bundle: MeshStateBundle): MeshReceiveResult {
@@ -56,17 +59,21 @@ class MeshReplicationRepository(
                 }
             }
         } while (madeProgress && remaining.isNotEmpty())
-        require(remaining.isEmpty()) { "Mesh bundle contains membership events without a trusted signer chain" }
+        // An event that never validates, such as one a removed device signed after its removal,
+        // is left out instead of failing every exchange with the peer that relays it.
+        if (remaining.isNotEmpty()) {
+            Log.w(TAG, "Skipped ${remaining.size} membership events without a trusted signer")
+        }
 
         bundle.folderAnnouncements
-            .sortedBy(FolderAnnouncement::createdAtMillis)
-            .forEach { folders.receive(it) }
+            .sortedWith(compareBy(FolderAnnouncement::createdAtMillis, FolderAnnouncement::eventId))
+            .forEach { skipInvalid("folder announcement") { folders.receive(it) } }
         bundle.syncExceptionEvents
             .sortedWith(compareBy(SyncExceptionEvent::createdAtMillis, SyncExceptionEvent::eventId))
-            .forEach { exceptions.receive(it) }
+            .forEach { skipInvalid("sync exception") { exceptions.receive(it) } }
         val newChatMessages = bundle.chatMessages
             .sortedWith(compareBy(MeshChatMessage::createdAtMillis, MeshChatMessage::messageId))
-            .filter { chat.receive(it) }
+            .filter { skipInvalid("chat message") { chat.receive(it) } == true }
         return MeshReceiveResult(
             newChatMessages = newChatMessages,
             replicatedStateChanged = replicatedItemCount(groupId) > replicatedItemCountBefore,
@@ -86,6 +93,20 @@ data class MeshReceiveResult(
 )
 
 private const val MAX_REPLICATED_CHAT_MESSAGES = 5_000
+private const val TAG = "SyncDroidMesh"
+
+/** Skips one invalid replicated item; database and cancellation errors still end the exchange. */
+private inline fun <T> skipInvalid(kind: String, receive: () -> T): T? = try {
+    receive()
+} catch (cancellation: CancellationException) {
+    throw cancellation
+} catch (invalid: IllegalArgumentException) {
+    Log.w(TAG, "Skipped an invalid $kind: ${invalid.message}")
+    null
+} catch (invalid: IllegalStateException) {
+    Log.w(TAG, "Skipped an invalid $kind: ${invalid.message}")
+    null
+}
 
 private fun MembershipEventEntity.toDomain() = MembershipEvent(
     eventId = eventId,

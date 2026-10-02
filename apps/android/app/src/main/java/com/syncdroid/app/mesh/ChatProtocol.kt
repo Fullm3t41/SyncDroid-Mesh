@@ -84,7 +84,10 @@ class MeshChatRepository(
         return MeshChatMessage.create(groupId, body, signer, createdAtMillis, attachment)
     }
 
-    suspend fun receive(message: MeshChatMessage): Boolean = applyVerified(message)
+    suspend fun receive(message: MeshChatMessage): Boolean {
+        if (chatDao.getMessage(message.groupId, message.messageId) != null) return false
+        return applyVerified(message)
+    }
 
     private suspend fun applyVerified(message: MeshChatMessage): Boolean {
         require(message.body.toByteArray(StandardCharsets.UTF_8).size <= MAX_CHAT_BODY_BYTES) {
@@ -95,10 +98,12 @@ class MeshChatRepository(
         }
         message.attachment?.validateForChat(message.createdAtMillis)
         require(message.hasValidMessageId()) { "Chat message ID does not match its payload" }
-        val author = requireNotNull(meshDao.getDevice(message.groupId, message.authorDeviceId)) {
+        requireNotNull(meshDao.getDevice(message.groupId, message.authorDeviceId)) {
             "Chat message author is not a member of this mesh"
         }
-        require(author.trustState == TRUSTED) { "Chat message author is not trusted" }
+        val author = requireNotNull(meshDao.signerAt(message.groupId, message.authorDeviceId, message.createdAtMillis)) {
+            "Chat message author is not trusted"
+        }
         require(message.verifySignature(decodePublicKey(author.publicKeyBase64))) {
             "Chat message signature is invalid"
         }

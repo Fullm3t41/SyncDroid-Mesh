@@ -55,7 +55,8 @@ object ContentBlockManifestBuilder {
 
     const val RESUMABLE_THRESHOLD_BYTES = 1L * 1024 * 1024
     private const val MIN_BLOCK_SIZE = 128 * 1024
-    private const val MAX_BLOCK_SIZE = 16 * 1024 * 1024
+    // A block travels in one message, which the transport caps at 16 MiB including its header.
+    private const val MAX_BLOCK_SIZE = 8 * 1024 * 1024
     private const val TARGET_BLOCK_COUNT = 1_000
 }
 
@@ -78,3 +79,16 @@ private fun ByteArray.toHex(): String {
         }
     }
 }
+
+/**
+ * Files no device syncs: this app's own in-progress temporary files, which a crash can leave in a
+ * synced folder, and Finder's view settings, which change constantly and conflict between Macs.
+ * Records already indexed for them are kept unchanged, so ignoring them never spreads a deletion.
+ */
+fun isSyncIgnoredPath(relativePath: String): Boolean {
+    val name = relativePath.substringAfterLast('/').substringAfterLast('\\')
+    return name.equals(".DS_Store", ignoreCase = true) || SYNC_TEMPORARY_NAME.matches(name)
+}
+
+private val SYNC_TEMPORARY_NAME =
+    Regex("""\.(?:(?:syncdroid|synctosh|syncdows)-[0-9a-fA-F-]{36}\.(?:tmp|part)|syncdroid-backup-[0-9a-fA-F-]{36})""")

@@ -26,6 +26,7 @@ The SyncTosh icon is derived from the SyncDroid-Mesh artwork, with a macOS-inspi
 - Signed TLS-bound identity proofs and returning-peer synchronization sessions
 - Local-network privacy and Bonjour service declarations in the macOS bundle
 - Per-file indexes with version vectors, tombstones, received/applied acknowledgements, and conflict detection
+- Conflict review with keep-local, keep-remote and numbered keep-both choices
 - Hash-verified whole-file and resumable block transfer with atomic file application
 - Thirty-day deletion recovery and file history
 - Signed, persisted mesh chat replicated through trusted peers

@@ -1,6 +1,7 @@
 package com.synctosh.app.mesh
 
 import com.syncdroid.shared.cloud.*
+import com.syncdroid.shared.sync.validateFolderIndexUpdate
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlinx.coroutines.runBlocking
@@ -29,6 +30,126 @@ class CloudFolderTransferTest {
             assertEquals("keep elsewhere", Files.readString(a))
             Files.writeString(a, "unsynced edit")
             assertNull(engine.managedFiles(id).single().lastSyncedAtMillis)
+        }
+    }
+
+    @Test fun removingTheNewestFileFromThisDeviceKeepsTheIndexValid() = runBlocking {
+        Fixture().use { f ->
+            val id = f.folders.first().folderId
+            Files.writeString(f.rootsA.first().resolve("older.dat"), "older")
+            f.runA(id); f.runB(id)
+            Files.writeString(f.rootsA.first().resolve("newer.dat"), "newer")
+            f.runA(id); f.runB(id)
+            val engine = FileSyncEngine(f.sa, f.a, f.sa.profile()!!)
+            engine.deleteFromThisDevice(id, "newer.dat")
+
+            validateFolderIndexUpdate(engine.buildFullUpdate(id)!!)
+            engine.buildUpdatesForPeer(emptyList()).forEach(::validateFolderIndexUpdate)
+            f.runA(id); f.runB(id)
+            assertEquals("newer", Files.readString(f.rootsB.first().resolve("newer.dat")))
+        }
+    }
+
+    @Test fun recoveringDoesNotReplaceAFileCreatedSinceTheLastScan() = runBlocking {
+        Fixture().use { f ->
+            val id = f.folders.first().folderId
+            val root = f.rootsA.first()
+            val file = root.resolve("notes.txt")
+            Files.writeString(file, "old")
+            FileSyncEngine(f.sa, f.a, f.sa.profile()!!).scanConfiguredFolders()
+            val history = FileHistoryRepository(f.sa, f.a.deviceId)
+            history.deleteWithRecovery(root, f.sa.fileVersion(id, "notes.txt")!!, f.a.deviceId)
+            Files.writeString(file, "new and not yet scanned")
+
+            val deleted = f.sa.fileHistory().first { it.action == FileHistoryAction.DELETED }
+            assertFailsWith<IllegalStateException> { history.recover(deleted.eventId, f.sa.profile()!!) }
+            assertEquals("new and not yet scanned", Files.readString(file))
+        }
+    }
+
+    @Test fun temporaryAndFinderFilesAreNotSynced() = runBlocking {
+        Fixture().use { f ->
+            val id = f.folders.first().folderId
+            val rootA = f.rootsA.first()
+            val rootB = f.rootsB.first()
+            Files.writeString(rootA.resolve(".DS_Store"), "finder view settings")
+            Files.writeString(rootA.resolve(".synctosh-${java.util.UUID.randomUUID()}.part"), "left by a crash")
+            Files.writeString(rootA.resolve("real.txt"), "real")
+            f.runA(id); f.runB(id)
+
+            assertEquals("real", Files.readString(rootB.resolve("real.txt")))
+            assertFalse(Files.exists(rootB.resolve(".DS_Store")))
+            assertNull(f.sa.fileVersion(id, ".DS_Store"))
+        }
+    }
+
+    @Test fun staleTransfersAreCleanedUp() {
+        Fixture().use { f ->
+            val directory = Files.createDirectories(f.rootsA.first().parent.resolve("transfers"))
+            val stale = Files.writeString(directory.resolve("stale.part"), "partial")
+            val fresh = Files.writeString(directory.resolve("fresh.part"), "partial")
+            Files.setLastModifiedTime(stale, java.nio.file.attribute.FileTime.fromMillis(1_000))
+            f.sa.upsertPartialTransfer(PartialTransfer("folder", "file", "a".repeat(64), stale.toString(), 7, 7, "", 1_000))
+
+            cleanupStaleTransfers(f.sa, directory)
+
+            assertFalse(Files.exists(stale))
+            assertTrue(Files.exists(fresh))
+            assertNull(f.sa.partialTransfer("folder", "file", "a".repeat(64)))
+        }
+    }
+
+    @Test fun capitalizationOnlyRenameReachesTheOtherDevice() = runBlocking {
+        Fixture().use { f ->
+            val id = f.folders.first().folderId
+            Files.writeString(f.rootsA.first().resolve("notes.txt"), "notes")
+            f.runA(id); f.runB(id)
+            val onB = f.rootsB.first().resolve("notes.txt")
+            Files.move(onB, onB.resolveSibling("rename-step"))
+            Files.move(onB.resolveSibling("rename-step"), onB.resolveSibling("Notes.txt"))
+
+            repeat(3) { f.runB(id); f.runA(id) }
+
+            val names = Files.list(f.rootsA.first()).use { paths -> paths.map { it.fileName.toString() }.toList() }
+            assertEquals(listOf("Notes.txt"), names.filter { it.equals("notes.txt", ignoreCase = true) })
+            assertEquals("notes", Files.readString(f.rootsA.first().resolve("Notes.txt")))
+            assertTrue(f.sa.unresolvedConflicts().isEmpty())
+        }
+    }
+
+    @Test fun folderSpelledDifferentlyOnACaseInsensitiveDiskBecomesAConflict() = runBlocking {
+        Fixture().use { f ->
+            val id = f.folders.first().folderId
+            Files.createDirectories(f.rootsA.first().resolve("photos"))
+            Files.writeString(f.rootsA.first().resolve("photos/a.jpg"), "a")
+            Files.writeString(f.rootsA.first().resolve("other.txt"), "other")
+            Files.createDirectories(f.rootsB.first().resolve("Photos"))
+            Files.writeString(f.rootsB.first().resolve("Photos/b.jpg"), "b")
+            val caseInsensitive = Files.isDirectory(f.rootsB.first().resolve("PHOTOS"))
+
+            f.runB(id); f.runA(id); f.runB(id)
+
+            assertEquals("other", Files.readString(f.rootsB.first().resolve("other.txt")))
+            assertEquals(caseInsensitive, f.sb.unresolvedConflicts().any { it.relativePath == "photos/a.jpg" })
+            assertEquals(caseInsensitive, f.sb.fileVersion(id, "photos/a.jpg") == null)
+        }
+    }
+
+    @Test fun anUnavailableFolderDoesNotStopOtherFoldersSyncing() = runBlocking {
+        Fixture().use { f ->
+            val (saves, photos) = f.folders.map { it.folderId }
+            Files.writeString(f.rootsA[0].resolve("save.dat"), "save")
+            Files.writeString(f.rootsA[1].resolve("photo.jpg"), "photo")
+            f.runA(saves); f.runA(photos)
+            // The photos folder lives on a drive that is now unplugged.
+            Files.move(f.rootsA[1], f.rootsA[1].resolveSibling("unplugged"))
+
+            FileSyncEngine(f.sa, f.a, f.sa.profile()!!).scanConfiguredFolders()
+            Files.writeString(f.rootsA[0].resolve("save.dat"), "newer save")
+            f.runA(saves); f.runA(photos); f.runB(saves)
+
+            assertEquals("newer save", Files.readString(f.rootsB[0].resolve("save.dat")))
+            assertFalse(f.sa.fileVersion(photos, "photo.jpg")!!.deleted)
         }
     }
 
@@ -97,7 +218,7 @@ class CloudFolderTransferTest {
         }
     }
 
-    @Test fun devicesExchangeFilesAndPreserveConflictingVersionsThroughCloudOnly() = runBlocking {
+    @Test fun devicesExchangeFilesAndResolveConflictsThroughCloudOnly() = runBlocking {
         Fixture().use { f ->
             val id = f.folders.first().folderId
             val a = f.rootsA.first().resolve("save.dat")
@@ -111,11 +232,16 @@ class CloudFolderTransferTest {
             Files.writeString(a, "A conflict")
             Files.writeString(b, "B conflict")
             f.runA(id); f.runB(id)
-            assertEquals(1, f.sb.unresolvedConflicts().size)
+            val conflict = f.sb.unresolvedConflictReviews().single()
+            val target = f.sb.queueConflictResolution(conflict.conflict.conflictId, ConflictResolutionAction.KEEP_BOTH, f.b.deviceId)
+            f.runB(id)
             assertEquals("B conflict", Files.readString(b))
+            assertEquals("A conflict", Files.readString(f.rootsB.first().resolve(target)))
+            assertTrue(f.sb.unresolvedConflictReviews().isEmpty())
+            assertEquals(sha256Hex("B conflict".byteInputStream()), f.sb.fileVersion(id, "save.dat")!!.contentSha256)
+            assertNotNull(f.sb.fileVersion(id, target))
             f.runA(id)
-            assertEquals("A conflict", Files.readString(a))
-            assertEquals(1, f.sa.unresolvedConflicts().size)
+            assertTrue(f.sa.unresolvedConflictReviews().isEmpty())
         }
     }
 
@@ -153,7 +279,7 @@ class CloudFolderTransferTest {
             CloudEncryptedObjects.encryptFile(oldB, file.fileId, file.contentSha256, f.rootsB[0].resolve("save.dat"), encrypted)
             f.remote.upload(root, CloudEncryptedObjects.fileName(oldB, file.fileId, file.contentSha256), encrypted)
             Files.write(encrypted, CloudEncryptedObjects.encryptManifest(oldB,
-                CloudFolderManifest(folder.folderId, folder.displayName, f.b.deviceId, System.currentTimeMillis(), index)))
+                CloudFolderManifest(folder.folderId, folder.displayName, f.b.deviceId, System.currentTimeMillis(), index), f.b::sign))
             f.remote.upload(root, CloudEncryptedObjects.manifestName(oldB, f.b.deviceId), encrypted)
             ka.import(oldB); kb.import(oldA)
             assertEquals(ka.existing(folder.folderId)!!.keyId, kb.existing(folder.folderId)!!.keyId)

@@ -786,7 +786,12 @@ class MeshRuntime(
         stableConnections += connection
         try {
             val remoteId = StablePeerAuthenticator(store, identity, profile.groupId).authenticate(connection)
-            if (!activeSessions.add(remoteId)) return
+            if (!activeSessions.add(remoteId)) {
+                // Both devices dialled each other at once. Say so explicitly; a bare close looks
+                // like a failed sync to the peer even though the other session carries on.
+                connection.declineAsBusy()
+                return
+            }
             updatePeerSyncState(remoteId)
             try {
                 syncMutex.withLock {
@@ -908,10 +913,11 @@ class MeshRuntime(
     }
 
     private fun reportSessionFailure(peerId: String, error: Throwable) {
-        activeSessions.remove(peerId)
+        // runStableSession releases its own activeSessions slot. Releasing it here as well would
+        // drop the slot held by a concurrent inbound session with the same peer.
         automaticallyContactedPeers.remove(peerId)
         connectionJobs.remove(peerId)
-        if (error is CancellationException) return
+        if (error is CancellationException || error is PeerSessionBusyException) return
         val peerName = store.profile()
             ?.let { profile -> store.devices(profile.groupId).firstOrNull { it.deviceId == peerId } }
             ?.displayName
