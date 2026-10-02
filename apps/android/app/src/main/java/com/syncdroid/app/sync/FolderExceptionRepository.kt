@@ -8,6 +8,7 @@ import com.syncdroid.app.mesh.DeviceSigner
 import com.syncdroid.app.mesh.SyncExceptionEvent
 import com.syncdroid.app.mesh.create
 import com.syncdroid.app.mesh.decodePublicKey
+import com.syncdroid.app.mesh.signerAt
 import com.syncdroid.app.mesh.verifySignature
 
 class FolderExceptionRepository(
@@ -59,13 +60,16 @@ class FolderExceptionRepository(
     }
 
     suspend fun receive(event: SyncExceptionEvent): Boolean {
+        if (syncDao.hasSyncExceptionEvent(event.eventId)) return false
         require(event.hasValidEventId()) { "Exception event ID does not match its payload" }
         val folder = requireNotNull(syncDao.getFolder(event.folderId)) { "Unknown mesh folder" }
         require(folder.groupId == event.groupId) { "Exception event belongs to a different mesh" }
-        val member = requireNotNull(meshDao.getDevice(event.groupId, event.signerDeviceId)) {
+        requireNotNull(meshDao.getDevice(event.groupId, event.signerDeviceId)) {
             "Exception signer is not a member of this mesh"
         }
-        require(member.trustState == TRUSTED) { "Exception signer is not trusted" }
+        val member = requireNotNull(meshDao.signerAt(event.groupId, event.signerDeviceId, event.createdAtMillis)) {
+            "Exception signer is not trusted"
+        }
         require(event.verifySignature(decodePublicKey(member.publicKeyBase64))) { "Invalid exception signature" }
 
         return database.withTransaction {
@@ -146,5 +150,3 @@ private fun SyncExceptionEvent.toEntity() = SyncExceptionEventEntity(
     createdAtMillis,
     signatureBase64,
 )
-
-private const val TRUSTED = "TRUSTED"

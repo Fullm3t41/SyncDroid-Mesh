@@ -5,6 +5,10 @@ import com.syncdroid.app.data.MembershipEventEntity
 import com.syncdroid.app.data.MeshDao
 import com.syncdroid.app.data.MeshGroupEntity
 import com.syncdroid.app.sync.VersionVector
+import com.syncdroid.shared.protocol.acceptsRemovedSignerItem
+import com.syncdroid.shared.protocol.acceptsRemovedSignerMembership
+import com.syncdroid.shared.protocol.causallyLatest
+import com.syncdroid.shared.protocol.isTrustedAfter
 import org.json.JSONArray
 import java.util.Base64
 
@@ -22,7 +26,14 @@ class MeshMembershipRepository(private val meshDao: MeshDao) {
         val events = meshDao.membershipEvents(groupId)
         if (events.isEmpty()) return false
         if (!restoreCreatorProjection(groupName, expectedCreatorDeviceId = null, events)) return false
-        return events.all { apply(groupName, it.toDomain(), replayRecorded = true).isSuccess }
+        // Device clocks differ, so an event can sort before the one that made its signer a member.
+        var pending = events.map { it.toDomain() }
+        while (pending.isNotEmpty()) {
+            val failed = pending.filterNot { apply(groupName, it, replayRecorded = true).isSuccess }
+            if (failed.size == pending.size) return false
+            pending = failed
+        }
+        return true
     }
 
     private suspend fun restoreCreatorProjection(
@@ -76,19 +87,21 @@ class MeshMembershipRepository(private val meshDao: MeshDao) {
             val signer = requireNotNull(meshDao.getDevice(event.groupId, event.signerDeviceId)) {
                 "Membership event signer is unknown"
             }
-            require(signer.trustState == TRUSTED) { "Membership event signer is not trusted" }
+            require(
+                signer.trustState == TRUSTED ||
+                    acceptsRemovedSignerMembership(event.version, meshDao.removals(event.groupId, signer.deviceId).map { it.version() }),
+            ) { "Membership event signer is not trusted" }
             decodePublicKey(signer.publicKeyBase64)
         }
         val existing = meshDao.getDevice(event.groupId, event.subjectDeviceId)
         when (event.eventType) {
             MembershipEventType.UpdateDeviceName -> {
                 require(event.signerDeviceId == event.subjectDeviceId) { "A device can only update its own nickname" }
-                require(existing?.trustState == TRUSTED) {
-                    "Only an existing trusted device can update its nickname"
-                }
+                requireNotNull(existing) { "Only an existing device can update its nickname" }
             }
             MembershipEventType.RemoveDevice -> {
-                require(existing?.trustState == TRUSTED) { "Only an existing trusted device can be removed" }
+                // Two devices may remove the same peer before hearing of each other's removal.
+                requireNotNull(existing) { "Only an existing device can be removed" }
                 require(existing.publicKeyBase64 == event.subjectPublicKeyBase64) {
                     "Removal event does not match the trusted device identity"
                 }
@@ -99,15 +112,24 @@ class MeshMembershipRepository(private val meshDao: MeshDao) {
 
         meshDao.upsertGroup(MeshGroupEntity(event.groupId, groupName, event.createdAtMillis))
         val inserted = meshDao.insertMembershipEvent(event.toEntity()) != -1L
+        // Derive the subject's state from all of its events, so arrival order cannot undo a removal.
+        val subjectEvents = meshDao.membershipEvents(event.groupId).filter { it.subjectDeviceId == event.subjectDeviceId }
+        val trusted = isTrustedAfter(
+            subjectEvents.filter { it.eventType == MembershipEventType.AddDevice.name }.map { it.version() },
+            subjectEvents.filter { it.eventType == MembershipEventType.RemoveDevice.name }.map { it.version() },
+        )
+        val subjectName = causallyLatest(subjectEvents) { it.version() }
+            .maxWithOrNull(compareBy(MembershipEventEntity::createdAtMillis, MembershipEventEntity::eventId))
+            ?.subjectDisplayName ?: event.subjectDisplayName
         val subjectKey = decodePublicKey(event.subjectPublicKeyBase64)
         meshDao.upsertDevice(
             DeviceEntity(
                 groupId = event.groupId,
                 deviceId = event.subjectDeviceId,
-                displayName = event.subjectDisplayName,
+                displayName = subjectName,
                 publicKeyBase64 = event.subjectPublicKeyBase64,
                 fingerprint = fingerprintFor(subjectKey),
-                trustState = if (event.eventType == MembershipEventType.RemoveDevice) REMOVED else TRUSTED,
+                trustState = if (trusted) TRUSTED else REMOVED,
                 addedByDeviceId = existing?.addedByDeviceId ?: event.signerDeviceId,
                 addedAtMillis = existing?.addedAtMillis ?: event.createdAtMillis,
                 lastSeenAtMillis = existing?.lastSeenAtMillis,
@@ -151,3 +173,16 @@ class MeshMembershipRepository(private val meshDao: MeshDao) {
         const val TRUSTED = "TRUSTED"
     }
 }
+
+/** A signer of a replicated item: trusted, or removed only after the item was created. */
+internal suspend fun MeshDao.signerAt(groupId: String, deviceId: String, createdAtMillis: Long): DeviceEntity? {
+    val device = getDevice(groupId, deviceId) ?: return null
+    if (device.trustState == "TRUSTED") return device
+    val removedAtMillis = removals(groupId, deviceId).maxOfOrNull(MembershipEventEntity::createdAtMillis)
+    return device.takeIf { acceptsRemovedSignerItem(createdAtMillis, removedAtMillis) }
+}
+
+private suspend fun MeshDao.removals(groupId: String, deviceId: String) = membershipEvents(groupId)
+    .filter { it.subjectDeviceId == deviceId && it.eventType == MembershipEventType.RemoveDevice.name }
+
+private fun MembershipEventEntity.version() = VersionVector.fromJson(versionVectorJson)

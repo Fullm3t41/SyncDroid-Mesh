@@ -34,7 +34,7 @@ interface MeshDao {
     @Query("SELECT COUNT(*) FROM devices WHERE groupId = :groupId AND trustState = 'TRUSTED'")
     suspend fun trustedDeviceCount(groupId: String): Int
 
-    @Query("SELECT * FROM membership_events WHERE groupId = :groupId ORDER BY createdAtMillis")
+    @Query("SELECT * FROM membership_events WHERE groupId = :groupId ORDER BY createdAtMillis, eventId")
     suspend fun membershipEvents(groupId: String): List<MembershipEventEntity>
 
     @Query("SELECT EXISTS(SELECT 1 FROM membership_events WHERE eventId = :eventId)")
@@ -70,6 +70,9 @@ interface SyncDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertFolderAnnouncement(event: FolderAnnouncementEntity): Long
 
+    @Query("SELECT EXISTS(SELECT 1 FROM folder_announcements WHERE eventId = :eventId)")
+    suspend fun hasFolderAnnouncement(eventId: String): Boolean
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertEndpoint(endpoint: SyncEndpointEntity)
 
@@ -78,6 +81,9 @@ interface SyncDao {
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertSyncExceptionEvent(event: SyncExceptionEventEntity): Long
+
+    @Query("SELECT EXISTS(SELECT 1 FROM sync_exception_events WHERE eventId = :eventId)")
+    suspend fun hasSyncExceptionEvent(eventId: String): Boolean
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertFileVersion(file: FileVersionEntity)
