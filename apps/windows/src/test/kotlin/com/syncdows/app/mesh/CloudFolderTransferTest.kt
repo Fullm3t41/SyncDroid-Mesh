@@ -67,6 +67,38 @@ class CloudFolderTransferTest {
         }
     }
 
+    @Test fun temporaryAndFinderFilesAreNotSynced() = runBlocking {
+        Fixture().use { f ->
+            val id = f.folders.first().folderId
+            val rootA = f.rootsA.first()
+            val rootB = f.rootsB.first()
+            Files.writeString(rootA.resolve(".DS_Store"), "finder view settings")
+            Files.writeString(rootA.resolve(".syncdows-${java.util.UUID.randomUUID()}.part"), "left by a crash")
+            Files.writeString(rootA.resolve("real.txt"), "real")
+            f.runA(id); f.runB(id)
+
+            assertEquals("real", Files.readString(rootB.resolve("real.txt")))
+            assertFalse(Files.exists(rootB.resolve(".DS_Store")))
+            assertNull(f.sa.fileVersion(id, ".DS_Store"))
+        }
+    }
+
+    @Test fun staleTransfersAreCleanedUp() {
+        Fixture().use { f ->
+            val directory = Files.createDirectories(f.rootsA.first().parent.resolve("transfers"))
+            val stale = Files.writeString(directory.resolve("stale.part"), "partial")
+            val fresh = Files.writeString(directory.resolve("fresh.part"), "partial")
+            Files.setLastModifiedTime(stale, java.nio.file.attribute.FileTime.fromMillis(1_000))
+            f.sa.upsertPartialTransfer(PartialTransfer("folder", "file", "a".repeat(64), stale.toString(), 7, 7, "", 1_000))
+
+            cleanupStaleTransfers(f.sa, directory)
+
+            assertFalse(Files.exists(stale))
+            assertTrue(Files.exists(fresh))
+            assertNull(f.sa.partialTransfer("folder", "file", "a".repeat(64)))
+        }
+    }
+
     @Test fun permanentDeletionRemovesRecoveryCopiesOnBothDevices() = runBlocking {
         Fixture().use { f ->
             val id = f.folders.first().folderId

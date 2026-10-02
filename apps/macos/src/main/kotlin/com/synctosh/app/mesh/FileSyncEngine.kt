@@ -1,5 +1,6 @@
 package com.synctosh.app.mesh
 
+import com.syncdroid.shared.sync.isSyncIgnoredPath
 import com.syncdroid.shared.sync.IndexExportRange
 import com.syncdroid.shared.sync.FileSyncState
 import com.syncdroid.shared.sync.decideFileSync as decideSharedFileSync
@@ -36,6 +37,7 @@ internal fun FileSyncPlan.expectedContent() = com.syncdroid.shared.sync.Expected
 
 fun decideFileSync(local: FileVersion?, remote: RemoteFileVersion): Pair<FileSyncAction, String> {
     require(!remote.purgeRecovery || remote.deleted) { "Recovery purge requires a deletion" }
+    if (isSyncIgnoredPath(remote.relativePath)) return FileSyncAction.Nothing to "Temporary and system files are not synced"
     if (remote.purgeRecovery && local?.deleted != false && local?.purgeRecovery != true &&
         (local == null || local.version.relationTo(remote.version) != com.syncdroid.shared.protocol.CausalRelation.After)) {
         return FileSyncAction.DownloadRemote to "Removing recovery copies for a permanent deletion"
@@ -287,6 +289,10 @@ class FileSyncEngine(
         val scannedPaths = scanned.mapTo(mutableSetOf(), ScannedFile::relativePath)
         previous.forEach { (path, old) ->
             if (path in scannedPaths) return@forEach
+            if (isSyncIgnoredPath(path)) {
+                updated[path] = old
+                return@forEach
+            }
             updated[path] = if (old.deleted || store.localActiveSyncException(folder.folderId, path, identity.deviceId)) old else {
                 changed = true
                 nextSequence++
@@ -359,7 +365,7 @@ private fun scanFiles(root: Path, includes: List<String>, excludes: List<String>
             val real = path.toRealPath(LinkOption.NOFOLLOW_LINKS)
             require(real.startsWith(rootReal)) { "Folder contains a file outside its root" }
             rootReal.relativize(real).invariantSeparatorsPathString to real
-        }.filter { (relativePath) -> shouldSync(relativePath, includes, excludes) }
+        }.filter { (relativePath) -> !isSyncIgnoredPath(relativePath) && shouldSync(relativePath, includes, excludes) }
             .map { (relativePath, path) -> stableFile(relativePath, path) }
             .sorted(compareBy(ScannedFile::relativePath))
             .toList()

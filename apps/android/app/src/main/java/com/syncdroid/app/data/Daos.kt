@@ -237,6 +237,9 @@ interface SyncDao {
     @Query("SELECT * FROM partial_transfers WHERE folderId = :folderId AND fileId = :fileId AND contentSha256 = :contentSha256 LIMIT 1")
     suspend fun partialTransfer(folderId: String, fileId: String, contentSha256: String): PartialTransferEntity?
 
+    @Query("SELECT * FROM partial_transfers WHERE updatedAtMillis < :updatedBeforeMillis")
+    suspend fun stalePartialTransfers(updatedBeforeMillis: Long): List<PartialTransferEntity>
+
     @Query("DELETE FROM partial_transfers WHERE folderId = :folderId AND fileId = :fileId AND contentSha256 = :contentSha256")
     suspend fun deletePartialTransfer(folderId: String, fileId: String, contentSha256: String)
 

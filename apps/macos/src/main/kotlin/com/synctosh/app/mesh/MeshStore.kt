@@ -647,6 +647,23 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
     }
 
     @Synchronized
+    fun stalePartialTransfers(updatedBeforeMillis: Long): List<PartialTransfer> = connection.prepareStatement(
+        """SELECT folder_id, file_id, content_sha256, temporary_path, total_size_bytes,
+                  block_size_bytes, received_blocks_base64, updated_at_millis
+           FROM partial_transfers WHERE updated_at_millis < ?""",
+    ).use { statement ->
+        statement.setLong(1, updatedBeforeMillis)
+        statement.executeQuery().use { rows ->
+            buildList {
+                while (rows.next()) add(PartialTransfer(
+                    rows.getString(1), rows.getString(2), rows.getString(3), rows.getString(4), rows.getLong(5),
+                    rows.getInt(6), rows.getString(7), rows.getLong(8),
+                ))
+            }
+        }
+    }
+
+    @Synchronized
     fun deletePartialTransfer(folderId: String, fileId: String, contentSha256: String) {
         connection.prepareStatement(
             "DELETE FROM partial_transfers WHERE folder_id = ? AND file_id = ? AND content_sha256 = ?",

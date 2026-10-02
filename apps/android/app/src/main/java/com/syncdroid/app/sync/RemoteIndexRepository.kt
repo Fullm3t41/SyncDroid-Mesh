@@ -1,5 +1,6 @@
 package com.syncdroid.app.sync
 
+import com.syncdroid.shared.sync.isSyncIgnoredPath
 import androidx.room.withTransaction
 import com.syncdroid.app.data.ConflictEntity
 import com.syncdroid.app.data.FileVersionEntity
@@ -24,6 +25,7 @@ data class FileSyncPlan(
 
 fun decideFileSync(local: FileVersionEntity?, remote: RemoteFileVersionEntity): Pair<FileSyncAction, String> {
     require(!remote.purgeRecovery || remote.deleted) { "Recovery purge requires a deletion" }
+    if (isSyncIgnoredPath(remote.relativePath)) return FileSyncAction.Nothing to "Temporary and system files are not synced"
     if (remote.purgeRecovery && local?.deleted != false && local?.purgeRecovery != true &&
         (local == null || VersionVector.fromJson(local.versionVectorJson).relationTo(VersionVector.fromJson(remote.versionVectorJson)) != com.syncdroid.shared.protocol.CausalRelation.After)) {
         return FileSyncAction.DownloadRemote to "Removing recovery copies for a permanent deletion"

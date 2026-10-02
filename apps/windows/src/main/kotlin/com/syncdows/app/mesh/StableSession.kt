@@ -94,6 +94,7 @@ class MeshFileSyncSession(
 
     suspend fun runFiles(connection: AuthenticatedPeerConnection, remoteDeviceId: String): MeshFileSyncResult {
         history.cleanupExpired()
+        cleanupStaleTransfers(store, transferCache())
         val metadataCountBefore = store.exportBundle().replicatedItemCount()
         connection.send(MeshSessionCodec.encode(MeshSessionMessage.Metadata(MeshWireCodec.encode(store.exportBundle()))))
         val remoteMetadata = connection.receiveSession<MeshSessionMessage.Metadata>()

@@ -1,5 +1,6 @@
 package com.syncdroid.app.sync
 
+import com.syncdroid.shared.sync.isSyncIgnoredPath
 import android.content.Context
 import android.net.Uri
 import com.syncdroid.app.data.FileVersionEntity
@@ -137,6 +138,7 @@ class SnapshotRepository(
         for ((path, previous) in previousFiles) {
             if (path in scannedPaths) continue
             when {
+                isSyncIgnoredPath(path) -> updated[path] = previous
                 path in awaitingRemoteResolution -> updated[path] = previous
                 previous.deleted -> updated[path] = previous
                 path in localActiveExceptions || policy == FolderDeletionPolicy.OVERWRITE_ONLY -> {

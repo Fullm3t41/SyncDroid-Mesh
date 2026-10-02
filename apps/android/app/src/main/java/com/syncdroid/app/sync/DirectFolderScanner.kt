@@ -1,5 +1,6 @@
 package com.syncdroid.app.sync
 
+import com.syncdroid.shared.sync.isSyncIgnoredPath
 import com.syncdroid.app.storage.SyncFilterRules
 import java.io.File
 import java.io.FileInputStream
@@ -34,7 +35,9 @@ class DirectFolderScanner {
                 val relativePath = safeFile.relativeTo(root).invariantSeparatorsPath
                 relativePath to safeFile
             }
-            .filter { (relativePath) -> relativePath !in excludedRelativePaths && rules.shouldSync(relativePath) }
+            .filter { (relativePath) ->
+                relativePath !in excludedRelativePaths && !isSyncIgnoredPath(relativePath) && rules.shouldSync(relativePath)
+            }
             .map { (relativePath, file) -> stableEntry(relativePath, file) }
             .sortedBy(FileManifestEntry::relativePath)
             .toList()

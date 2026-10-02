@@ -79,3 +79,16 @@ private fun ByteArray.toHex(): String {
         }
     }
 }
+
+/**
+ * Files no device syncs: this app's own in-progress temporary files, which a crash can leave in a
+ * synced folder, and Finder's view settings, which change constantly and conflict between Macs.
+ * Records already indexed for them are kept unchanged, so ignoring them never spreads a deletion.
+ */
+fun isSyncIgnoredPath(relativePath: String): Boolean {
+    val name = relativePath.substringAfterLast('/').substringAfterLast('\\')
+    return name.equals(".DS_Store", ignoreCase = true) || SYNC_TEMPORARY_NAME.matches(name)
+}
+
+private val SYNC_TEMPORARY_NAME =
+    Regex("""\.(?:(?:syncdroid|synctosh|syncdows)-[0-9a-fA-F-]{36}\.(?:tmp|part)|syncdroid-backup-[0-9a-fA-F-]{36})""")

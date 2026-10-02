@@ -101,6 +101,7 @@ class MeshSyncSession(
         val receiveResult = exchangeMetadata(connection)
         exchangeFolderKeys(connection)
         chatAttachments.cleanupExpired(groupId)
+        cleanupStaleTransfers()
         val missingAttachments = chatAttachments.missing(
             database.chatDao().recentMessages(groupId, MAX_REPLICATED_CHAT_ATTACHMENTS)
                 .asReversed().map { it.toDomain() },
@@ -591,6 +592,21 @@ class MeshSyncSession(
 
     private fun transferCache(): File = File(appContext.cacheDir, "mesh-transfers").apply { mkdirs() }
 
+    /**
+     * Removes partial downloads of versions that stopped arriving, and temporary files a crash
+     * left behind. Without this they stay in the transfer cache until Android clears it.
+     */
+    private suspend fun cleanupStaleTransfers(nowMillis: Long = System.currentTimeMillis()) {
+        val cutoff = nowMillis - STALE_TRANSFER_MILLIS
+        val root = transferCache().canonicalFile
+        syncDao.stalePartialTransfers(cutoff).forEach { partial ->
+            syncDao.deletePartialTransfer(partial.folderId, partial.fileId, partial.contentSha256)
+            File(partial.temporaryPath).canonicalFile.takeIf { it.toPath().startsWith(root.toPath()) }?.delete()
+        }
+        root.listFiles()?.filter { it.isFile && it.name.endsWith(".part") && it.lastModified() < cutoff }
+            ?.forEach(File::delete)
+    }
+
     private data class PreparedDownload(
         val plan: FileSyncPlan,
         val blockReceiver: ResumableBlockReceiver?,
@@ -609,6 +625,7 @@ class MeshSyncSession(
         const val MAX_INDEX_FILES = 50_000
         const val MAX_REPLICATED_CHAT_ATTACHMENTS = 5_000
         const val RESUMABLE_THRESHOLD_BYTES = 1024 * 1024L
+        const val STALE_TRANSFER_MILLIS = 7L * 24 * 60 * 60 * 1_000
     }
 }
 
