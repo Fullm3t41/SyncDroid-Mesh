@@ -16,8 +16,8 @@ android {
         applicationId = "com.syncdroid.app"
         minSdk = 29
         targetSdk = 36
-        versionCode = 20
-        versionName = "1.2.13"
+        versionCode = 21
+        versionName = "1.2.14"
 
         manifestPlaceholders["appAuthRedirectScheme"] = "com.syncdroid.app"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
