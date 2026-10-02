@@ -7,7 +7,7 @@ Devices must first join the same mesh and exchange folder keys. They can then pu
 ## Google
 
 1. Create a Google Cloud project, enable the Google Drive API, and configure the OAuth consent screen. Use the same project for desktop and Android registrations so the Drive application identity is consistent.
-2. Register a Desktop app OAuth client. Set `SYNCDROID_GOOGLE_CLIENT_ID` in `shared/sync-core/src/main/resources/cloud-oauth.properties`. The desktop flow uses PKCE and an ephemeral IPv4 loopback redirect (`http://127.0.0.1:<port>`).
+2. Register a Desktop app OAuth client. Set `SYNCDROID_GOOGLE_CLIENT_ID` and `SYNCDROID_GOOGLE_CLIENT_SECRET` in `shared/sync-core/src/main/resources/cloud-oauth.properties`. Google requires the Desktop client's secret on token requests and does not treat it as confidential for installed apps. The desktop flow uses PKCE and an ephemeral IPv4 loopback redirect (`http://127.0.0.1:<port>`).
 3. Register an Android OAuth client for package `com.syncdroid.app` and the permanent Android release signing certificate SHA-1. Set its public ID as `SYNCDROID_GOOGLE_ANDROID_CLIENT_ID` in that resource. Debug builds need a matching debug-certificate registration. Android uses the Google Play services authorization API; a supported Google Play services installation is required for Google Drive sign-in.
 4. Request only `https://www.googleapis.com/auth/drive.file`. Add test users while the consent screen is in testing. Complete the provider's required publication/verification steps before general distribution.
 
