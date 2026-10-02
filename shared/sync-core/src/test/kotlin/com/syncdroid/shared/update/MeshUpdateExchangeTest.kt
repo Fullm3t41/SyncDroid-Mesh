@@ -82,7 +82,7 @@ class MeshUpdateExchangeTest {
             if (!wantsAsset && bytes.size.toLong() == descriptor.sizeBytes) listOf(descriptor) else emptyList()
 
         override fun desiredAsset(): UpdateAssetDescriptor? = descriptor.takeIf { wantsAsset && bytes.size.toLong() < descriptor.sizeBytes }
-        override fun partialSize(sha256: String): Long = bytes.size.toLong()
+        override suspend fun partialSize(sha256: String): Long = bytes.size.toLong()
 
         override suspend fun readChunk(sha256: String, offset: Long, maxBytes: Int): ByteArray =
             bytes.copyOfRange(offset.toInt(), (offset + maxBytes).coerceAtMost(bytes.size.toLong()).toInt())
