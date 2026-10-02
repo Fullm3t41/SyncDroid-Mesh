@@ -56,8 +56,26 @@ class FileSyncEngine(
 ) {
     private val history = FileHistoryRepository(store, identity.deviceId)
 
+    /**
+     * Scans every configured folder that can be read. A folder on an unplugged drive, or one with an
+     * unreadable subfolder, keeps its last index instead of failing the sync of every other folder.
+     * Nothing in it is marked deleted.
+     */
     fun scanConfiguredFolders(recordHistory: Boolean = true) {
-        store.configuredFolders(profile.groupId, identity.deviceId).forEach { scanFolder(it, recordHistory) }
+        store.configuredFolders(profile.groupId, identity.deviceId).forEach { folder ->
+            try {
+                scanFolder(folder, recordHistory)
+            } catch (_: java.io.IOException) {
+            } catch (_: java.io.UncheckedIOException) {
+            } catch (_: IllegalArgumentException) {
+            } catch (_: IllegalStateException) {
+            }
+        }
+    }
+
+    /** Scans one folder, failing if it cannot be read. */
+    fun scanConfiguredFolder(folderId: String, recordHistory: Boolean = true) {
+        scanFolder(requireNotNull(store.configuredFolders(profile.groupId, identity.deviceId).find { it.folderId == folderId }), recordHistory)
     }
 
     fun managedFiles(folderId: String): List<ManagedFile> {

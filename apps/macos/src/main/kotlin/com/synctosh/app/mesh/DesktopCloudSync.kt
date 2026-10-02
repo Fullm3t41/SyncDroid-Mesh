@@ -103,8 +103,10 @@ internal class DesktopCloudFolderTransfer(
         val folder = store.configuredFolders(profile.groupId, identity.deviceId).firstOrNull { it.folderId == folderId }
             ?: return CloudTransferResult()
         val root = Path.of(requireNotNull(folder.localPath)).toAbsolutePath().normalize()
+        // A folder on an unplugged drive waits until it is available again.
+        if (!Files.isDirectory(root)) return CloudTransferResult()
         val engine = FileSyncEngine(store, identity, profile)
-        engine.scanConfiguredFolders()
+        engine.scanConfiguredFolder(folderId)
         val key = folderKeys.getOrCreate(folderId)
         val syncRootId = remote.ensureFolder(remote.rootId, "SyncDroid")
         val folderRootId = remote.ensureFolder(syncRootId, folder.displayName)

@@ -135,6 +135,24 @@ class CloudFolderTransferTest {
         }
     }
 
+    @Test fun anUnavailableFolderDoesNotStopOtherFoldersSyncing() = runBlocking {
+        Fixture().use { f ->
+            val (saves, photos) = f.folders.map { it.folderId }
+            Files.writeString(f.rootsA[0].resolve("save.dat"), "save")
+            Files.writeString(f.rootsA[1].resolve("photo.jpg"), "photo")
+            f.runA(saves); f.runA(photos)
+            // The photos folder lives on a drive that is now unplugged.
+            Files.move(f.rootsA[1], f.rootsA[1].resolveSibling("unplugged"))
+
+            FileSyncEngine(f.sa, f.a, f.sa.profile()!!).scanConfiguredFolders()
+            Files.writeString(f.rootsA[0].resolve("save.dat"), "newer save")
+            f.runA(saves); f.runA(photos); f.runB(saves)
+
+            assertEquals("newer save", Files.readString(f.rootsB[0].resolve("save.dat")))
+            assertFalse(f.sa.fileVersion(photos, "photo.jpg")!!.deleted)
+        }
+    }
+
     @Test fun permanentDeletionRemovesRecoveryCopiesOnBothDevices() = runBlocking {
         Fixture().use { f ->
             val id = f.folders.first().folderId
