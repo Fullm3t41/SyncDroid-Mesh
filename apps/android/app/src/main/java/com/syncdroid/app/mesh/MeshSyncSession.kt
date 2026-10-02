@@ -17,6 +17,7 @@ import com.syncdroid.app.sync.AtomicFileApplier
 import com.syncdroid.app.sync.BlockManifest
 import com.syncdroid.app.sync.BlockManifestBuilder
 import com.syncdroid.app.sync.BlockManifestRepository
+import com.syncdroid.app.sync.CASE_CLASH_REASON
 import com.syncdroid.app.sync.FileSyncAction
 import com.syncdroid.app.sync.FileSyncPlan
 import com.syncdroid.app.sync.FileHistoryRepository
@@ -202,6 +203,12 @@ class MeshSyncSession(
                     FileSyncAction.Nothing -> if (!blocked) remoteIndexes.acknowledgeRemoteApplied(publisher.deviceId, plan.remote)
                     FileSyncAction.DownloadRemote -> {
                         val applier = requireNotNull(binding.fileApplierOrNull(plan)) { "Folder permission is unavailable" }
+                        if (!plan.remote.deleted && applier.storageProblem(plan.relativePath) != null) {
+                            remoteIndexes.recordConflict(folderId, plan.local, plan.remote)
+                            blocked = true
+                            result = result.copy(conflicts = result.conflicts + 1)
+                            continue
+                        }
                         val before = syncDao.fileVersion(folderId, plan.relativePath)
                         if (plan.remote.deleted) {
                             if (plan.remote.purgeRecovery) {
@@ -398,14 +405,24 @@ class MeshSyncSession(
     }.sortedWith(compareBy({ it.remote.folderId }, { it.remote.remoteSequence }))
 
     private suspend fun prepareDownloads(plans: List<FileSyncPlan>): List<PreparedDownload> {
+        val deletedSpellings = plans.filter { it.remote.deleted }
+            .mapTo(mutableSetOf()) { it.remote.folderId to it.relativePath.lowercase(java.util.Locale.ROOT) }
         return plans.map { plan ->
             if (plan.action != FileSyncAction.DownloadRemote || plan.remote.deleted) {
                 PreparedDownload(plan, null, 0, 0L)
             } else {
                 val binding = syncDao.getBinding(plan.remote.folderId, identity.deviceId)
                 val applier = binding?.fileApplierOrNull(plan)
+                val storageProblem = applier?.storageProblem(plan.relativePath)
                 if (applier == null) {
                     PreparedDownload(plan, null, 0, 0L)
+                } else if (storageProblem != null) {
+                    // A capitalization-only rename deletes the old spelling in the same changes: wait one
+                    // session for it to go instead of reporting a conflict.
+                    val renaming = storageProblem == CASE_CLASH_REASON &&
+                        (plan.remote.folderId to plan.relativePath.lowercase(java.util.Locale.ROOT)) in deletedSpellings
+                    if (!renaming) remoteIndexes.recordConflict(plan.remote.folderId, plan.local, plan.remote)
+                    PreparedDownload(plan.copy(action = FileSyncAction.Conflict, reason = storageProblem), null, 0, 0L)
                 } else {
                     val storageWarning = storageCapacity.warningForIncomingFile(
                         binding,

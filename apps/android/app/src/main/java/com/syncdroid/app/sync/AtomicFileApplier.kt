@@ -17,6 +17,10 @@ class AtomicFileApplier(
         require(it.isDirectory || it.mkdirs()) { "Could not create sync root" }
     }
 
+    override fun storageProblem(relativePath: String): String? = storageNameProblem(normalizedRelativePath(relativePath)) { parts ->
+        File(root, parts.joinToString("/")).takeIf(File::isDirectory)?.list()?.toList()
+    }
+
     override fun apply(
         relativePath: String,
         input: InputStream,

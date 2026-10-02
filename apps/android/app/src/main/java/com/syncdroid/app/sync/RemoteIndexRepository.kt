@@ -214,7 +214,7 @@ class RemoteIndexRepository(
         indexStates.acknowledgeApplied(remote.folderId, remoteDeviceId, remoteState.indexEpoch, remote.remoteSequence)
     }
 
-    private suspend fun recordConflict(folderId: String, local: FileVersionEntity?, remote: RemoteFileVersionEntity) {
+    suspend fun recordConflict(folderId: String, local: FileVersionEntity?, remote: RemoteFileVersionEntity) {
         val conflictKey = "$folderId\u0000${remote.relativePath}\u0000${local?.contentSha256.orEmpty()}\u0000${remote.deviceId}\u0000${remote.contentSha256}"
         syncDao.upsertConflict(
             ConflictEntity(
