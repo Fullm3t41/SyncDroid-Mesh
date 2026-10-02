@@ -43,6 +43,7 @@ import com.syncdroid.shared.update.MeshUpdateCache
 import com.syncdroid.shared.update.MeshUpdateExchange
 import java.io.File
 import java.io.FileOutputStream
+import java.net.SocketTimeoutException
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import org.json.JSONArray
@@ -269,7 +270,13 @@ class MeshSyncSession(
     private suspend fun exchangeMetadata(connection: AuthenticatedPeerConnection): MeshReceiveResult {
         val local = MeshWireCodec.encode(replication.export(groupId, groupName))
         connection.send(MeshSessionCodec.encode(MeshSessionMessage.Metadata(local)))
-        val remote = connection.receiveSession<MeshSessionMessage.Metadata>()
+        val remote = try {
+            connection.receiveSession<MeshSessionMessage.Metadata>()
+        } catch (timeout: SocketTimeoutException) {
+            // Desktop apps sync one peer at a time and queue the rest, so a long wait before the
+            // first reply means the peer is busy rather than that this sync failed.
+            throw PeerSessionBusyException().apply { initCause(timeout) }
+        }
         return replication.receive(MeshWireCodec.decode(remote.bundle))
     }
 

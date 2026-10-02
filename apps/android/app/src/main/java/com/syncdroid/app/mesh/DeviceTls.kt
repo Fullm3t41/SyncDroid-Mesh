@@ -27,8 +27,9 @@ class DeviceTlsContext private constructor(private val context: SSLContext) {
             needClientAuth = true
         }
 
-    fun createClientSocket(host: String, port: Int): SSLSocket =
-        (context.socketFactory.createSocket(host, port) as SSLSocket).apply {
+    /** An unconnected socket, so the caller can connect with a timeout. */
+    fun createClientSocket(): SSLSocket =
+        (context.socketFactory.createSocket() as SSLSocket).apply {
             enabledProtocols = arrayOf(TLS_1_2)
             useClientMode = true
         }
