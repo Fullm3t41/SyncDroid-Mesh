@@ -7,6 +7,7 @@ import com.syncdroid.app.data.SyncExceptionEventEntity
 import com.syncdroid.app.sync.FolderExceptionRepository
 import com.syncdroid.app.sync.VersionVector
 import android.util.Log
+import com.syncdroid.shared.protocol.newestChatWithinBudget
 import kotlinx.coroutines.CancellationException
 import org.json.JSONArray
 
@@ -27,9 +28,9 @@ class MeshReplicationRepository(
         membershipEvents = meshDao.membershipEvents(groupId).map(MembershipEventEntity::toDomain),
         folderAnnouncements = syncDao.folderAnnouncements(groupId).map(FolderAnnouncementEntity::toDomain),
         syncExceptionEvents = syncDao.syncExceptionEvents(groupId).map(SyncExceptionEventEntity::toDomain),
-        chatMessages = chatDao.recentMessages(groupId, MAX_REPLICATED_CHAT_MESSAGES)
-            .asReversed()
-            .map { it.toDomain() },
+        chatMessages = newestChatWithinBudget(
+            chatDao.recentMessages(groupId, MAX_REPLICATED_CHAT_MESSAGES).asReversed().map { it.toDomain() },
+        ) { it.body.length },
     )
 
     suspend fun receive(bundle: MeshStateBundle): MeshReceiveResult {

@@ -39,6 +39,7 @@ import com.syncdroid.shared.protocol.MeshSessionMessage
 import com.syncdroid.shared.protocol.SessionFolderKey
 import com.syncdroid.shared.sync.ActiveTransferClaims
 import com.syncdroid.shared.sync.activeTransferKey
+import com.syncdroid.shared.sync.fitIndexUpdates
 import com.syncdroid.shared.update.MeshUpdateCache
 import com.syncdroid.shared.update.MeshUpdateExchange
 import java.io.File
@@ -110,7 +111,7 @@ class MeshSyncSession(
         connection.send(MeshSessionCodec.encode(MeshSessionMessage.Catalog(localCatalog)))
         val remoteCatalog = connection.receiveSession<MeshSessionMessage.Catalog>().folders
 
-        val updates = buildUpdatesForPeer(remoteCatalog)
+        val updates = fitIndexUpdates(buildUpdatesForPeer(remoteCatalog))
         connection.send(MeshSessionCodec.encode(MeshSessionMessage.IndexBatch(updates)))
         val receivedUpdates = connection.receiveSession<MeshSessionMessage.IndexBatch>().updates
         val receivedPlans = receiveIndexes(remoteDeviceId, receivedUpdates)
@@ -336,15 +337,14 @@ class MeshSyncSession(
             val versions = (if (full) syncDao.fileVersions(folder.folderId) else {
                 syncDao.fileVersionsAfter(folder.folderId, previous, MAX_INDEX_FILES)
             }).sortedBy(FileVersionEntity::localSequence)
-            require(versions.size < MAX_INDEX_FILES || versions.last().localSequence == local.maxSequence) {
-                "Folder index is too large for one session"
-            }
+            // A capped query ends the range at its last record; the peer asks for the rest next session.
+            val lastSequence = if (!full && versions.size >= MAX_INDEX_FILES) versions.last().localSequence else local.maxSequence
             val binding = syncDao.getBinding(folder.folderId, identity.deviceId)
             FolderIndexUpdate(
                 folder.folderId,
                 local.indexEpoch,
                 previous,
-                local.maxSequence,
+                lastSequence,
                 full,
                 versions.map { it.toIndexedRecord(binding) },
             )

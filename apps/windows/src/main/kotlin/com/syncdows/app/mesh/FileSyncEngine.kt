@@ -146,7 +146,6 @@ class FileSyncEngine(
             val versions = (if (range.fullIndex) store.fileVersions(folder.folderId) else {
                 store.fileVersionsAfter(folder.folderId, range.previousSequence)
             }).sortedBy(FileVersion::localSequence)
-            require(versions.size <= MAX_INDEX_FILES) { "Folder index is too large for one session" }
             indexUpdate(folder.folderId, local.indexEpoch, range, versions, root)
         }
     }

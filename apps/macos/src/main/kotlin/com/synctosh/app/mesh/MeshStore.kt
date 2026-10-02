@@ -4,6 +4,7 @@ import com.syncdroid.shared.protocol.acceptsRemovedSignerItem
 import com.syncdroid.shared.protocol.acceptsRemovedSignerMembership
 import com.syncdroid.shared.protocol.causallyLatest
 import com.syncdroid.shared.protocol.isTrustedAfter
+import com.syncdroid.shared.protocol.newestChatWithinBudget
 import com.syncdroid.shared.sync.IndexReceiveDecision
 import com.syncdroid.shared.sync.IndexStateSnapshot
 import com.syncdroid.shared.sync.acknowledgeIndexContent
@@ -265,7 +266,7 @@ class MeshStore(databasePath: Path = defaultDatabasePath()) : AutoCloseable {
             membershipEvents(profile.groupId),
             folderAnnouncements(profile.groupId),
             syncExceptionEvents(profile.groupId),
-            chatMessages = chatMessages(profile.groupId),
+            chatMessages = newestChatWithinBudget(chatMessages(profile.groupId)) { it.body.length },
         )
     }
 

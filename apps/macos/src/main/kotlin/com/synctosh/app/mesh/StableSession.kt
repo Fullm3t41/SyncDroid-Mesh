@@ -8,6 +8,7 @@ import com.syncdroid.shared.cloud.FolderKeyMaterial
 import com.syncdroid.shared.protocol.verifyEcdsaSha256
 import com.syncdroid.shared.sync.ActiveTransferClaims
 import com.syncdroid.shared.sync.activeTransferKey
+import com.syncdroid.shared.sync.fitIndexUpdates
 import com.syncdroid.shared.update.MeshUpdateCache
 import com.syncdroid.shared.update.MeshUpdateExchange
 import java.security.SecureRandom
@@ -105,7 +106,7 @@ class MeshFileSyncSession(
         engine.scanConfiguredFolders()
         connection.send(MeshSessionCodec.encode(MeshSessionMessage.Catalog(engine.buildCatalog(remoteDeviceId))))
         val remoteCatalog = connection.receiveSession<MeshSessionMessage.Catalog>().folders
-        connection.send(MeshSessionCodec.encode(MeshSessionMessage.IndexBatch(engine.buildUpdatesForPeer(remoteCatalog))))
+        connection.send(MeshSessionCodec.encode(MeshSessionMessage.IndexBatch(fitIndexUpdates(engine.buildUpdatesForPeer(remoteCatalog)))))
         val remoteUpdates = connection.receiveSession<MeshSessionMessage.IndexBatch>().updates
         val candidatePlans = engine.receiveIndexes(remoteDeviceId, remoteUpdates)
         val transferClaims = ActiveTransferClaims.claim(

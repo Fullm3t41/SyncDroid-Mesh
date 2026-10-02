@@ -55,7 +55,8 @@ object ContentBlockManifestBuilder {
 
     const val RESUMABLE_THRESHOLD_BYTES = 1L * 1024 * 1024
     private const val MIN_BLOCK_SIZE = 128 * 1024
-    private const val MAX_BLOCK_SIZE = 16 * 1024 * 1024
+    // A block travels in one message, which the transport caps at 16 MiB including its header.
+    private const val MAX_BLOCK_SIZE = 8 * 1024 * 1024
     private const val TARGET_BLOCK_COUNT = 1_000
 }
 
