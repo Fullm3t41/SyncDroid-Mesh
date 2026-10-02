@@ -391,6 +391,20 @@ class SyncForegroundService : Service() {
                 refreshActionItems()
                 runPendingReconcileIfIdle()
             }
+            is MeshRuntimeEvent.SyncInterrupted -> {
+                // A duplicate connection lost the race to another session, or the runtime stopped.
+                // Neither is a failed sync, so clear its progress without raising an alert.
+                peerTransferRates.remove(event.peerId)
+                peerTransferProgress.remove(event.peerId)
+                if (activePeers.remove(event.peerId) != null) {
+                    if (activePeers.isEmpty()) {
+                        setStatus("Looking for mesh devices", "Reconnecting to ${event.peerName}")
+                    } else {
+                        showActiveSyncStatus()
+                    }
+                }
+                runPendingReconcileIfIdle()
+            }
             is MeshRuntimeEvent.ChatMessagesReceived -> {
                 eventNotifications.showChatMessages(event.count, event.authorName, event.preview)
             }

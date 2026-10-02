@@ -3,6 +3,7 @@ package com.syncdows.app.mesh
 import com.syncdows.app.platform.WindowsAppPaths
 
 import com.syncdroid.shared.protocol.FileTransferMessage
+import com.syncdroid.shared.protocol.MESH_SESSION_BUSY_REASON
 import com.syncdroid.shared.protocol.MeshSessionMessage
 import com.syncdroid.shared.protocol.SessionFolderKey
 import com.syncdroid.shared.cloud.FolderKeyMaterial
@@ -331,11 +332,18 @@ class MetadataOnlyMeshSession(
 
 private suspend inline fun <reified T : MeshSessionMessage> AuthenticatedPeerConnection.receiveSession(): T {
     return when (val value = MeshSessionCodec.decode(receive())) {
-        is MeshSessionMessage.Error -> error(value.reason)
+        is MeshSessionMessage.Error -> if (value.reason == MESH_SESSION_BUSY_REASON) {
+            throw PeerSessionBusyException()
+        } else {
+            error(value.reason)
+        }
         is T -> value
         else -> error("Unexpected mesh session message")
     }
 }
+
+/** The peer already has a session with this device, so this connection was a duplicate rather than a failed sync. */
+internal class PeerSessionBusyException : IllegalStateException(MESH_SESSION_BUSY_REASON)
 
 suspend fun exchangeMeshUpdates(
     cache: MeshUpdateCache?, localDeviceId: String, remoteDeviceId: String,

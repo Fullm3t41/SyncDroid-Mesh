@@ -34,6 +34,7 @@ import com.syncdroid.app.sync.SyncFileApplier
 import com.syncdroid.app.sync.VersionVector
 import com.syncdroid.app.sync.WholeFilePeerClient
 import com.syncdroid.shared.protocol.FileTransferMessage
+import com.syncdroid.shared.protocol.MESH_SESSION_BUSY_REASON
 import com.syncdroid.shared.protocol.MeshSessionMessage
 import com.syncdroid.shared.protocol.SessionFolderKey
 import com.syncdroid.shared.sync.ActiveTransferClaims
@@ -660,4 +661,4 @@ private fun LocalFolderBindingEntity.configuredLocationOrNull(): String? {
 
 private fun JSONArray.strings(): List<String> = List(length()) { getString(it) }
 
-internal const val SESSION_BUSY_REASON = "Peer session already active"
+internal const val SESSION_BUSY_REASON = MESH_SESSION_BUSY_REASON

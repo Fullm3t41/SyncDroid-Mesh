@@ -74,6 +74,13 @@ sealed interface MeshSessionMessage {
     data class Error(val reason: String) : MeshSessionMessage
 }
 
+/**
+ * [MeshSessionMessage.Error] reason sent instead of [MeshSessionMessage.Metadata] when a device
+ * already has a session with the connecting peer, typically because both devices dialled each
+ * other at the same moment. The receiver should treat it as a collision, not a failed sync.
+ */
+const val MESH_SESSION_BUSY_REASON = "Peer session already active"
+
 /** Wire-compatible with version 2 of the SDMS session and index protocol. */
 object MeshSessionWireCodec {
     fun encode(message: MeshSessionMessage): ByteArray = ByteArrayOutputStream().use { bytes ->
