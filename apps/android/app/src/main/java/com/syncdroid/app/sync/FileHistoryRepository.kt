@@ -138,8 +138,11 @@ class FileHistoryRepository(
             "Configure this folder on this device before recovering the file"
         }
         val expectedHash = requireNotNull(event.contentSha256)
+        // The index can lag behind the disk, so the applier also refuses to replace a file created
+        // at this path since the last scan.
+        val onDisk = com.syncdroid.shared.sync.ExpectedFileContent(current?.takeUnless { it.deleted }?.contentSha256)
         FileInputStream(recoveryFile).use { input ->
-            fileApplier(binding).apply(relativePath, input, expectedHash, event.modifiedAtMillis)
+            fileApplier(binding, onDisk).apply(relativePath, input, expectedHash, event.modifiedAtMillis)
         }
         activityDao.markRecovered(eventId, nowMillis)
         recoveryFile.delete()

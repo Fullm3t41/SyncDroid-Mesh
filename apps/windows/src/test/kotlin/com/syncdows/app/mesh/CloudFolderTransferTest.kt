@@ -50,6 +50,23 @@ class CloudFolderTransferTest {
         }
     }
 
+    @Test fun recoveringDoesNotReplaceAFileCreatedSinceTheLastScan() = runBlocking {
+        Fixture().use { f ->
+            val id = f.folders.first().folderId
+            val root = f.rootsA.first()
+            val file = root.resolve("notes.txt")
+            Files.writeString(file, "old")
+            FileSyncEngine(f.sa, f.a, f.sa.profile()!!).scanConfiguredFolders()
+            val history = FileHistoryRepository(f.sa, f.a.deviceId)
+            history.deleteWithRecovery(root, f.sa.fileVersion(id, "notes.txt")!!, f.a.deviceId)
+            Files.writeString(file, "new and not yet scanned")
+
+            val deleted = f.sa.fileHistory().first { it.action == FileHistoryAction.DELETED }
+            assertFailsWith<IllegalStateException> { history.recover(deleted.eventId, f.sa.profile()!!) }
+            assertEquals("new and not yet scanned", Files.readString(file))
+        }
+    }
+
     @Test fun permanentDeletionRemovesRecoveryCopiesOnBothDevices() = runBlocking {
         Fixture().use { f ->
             val id = f.folders.first().folderId

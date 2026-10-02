@@ -130,8 +130,11 @@ class FileHistoryRepository(
         require(current == null || current.deleted || current.contentSha256.equals(event.contentSha256, true)) {
             "A newer file already exists at this location"
         }
+        // The index can lag behind the disk, so the applier also refuses to replace a file created
+        // at this path since the last scan.
+        val onDisk = com.syncdroid.shared.sync.ExpectedFileContent(current?.takeUnless { it.deleted }?.contentSha256)
         FileInputStream(archive.toFile()).use { input ->
-            AtomicFileApplier(Path.of(requireNotNull(folder.localPath))).apply(
+            AtomicFileApplier(Path.of(requireNotNull(folder.localPath)), onDisk).apply(
                 event.relativePath,
                 input,
                 requireNotNull(event.contentSha256),
