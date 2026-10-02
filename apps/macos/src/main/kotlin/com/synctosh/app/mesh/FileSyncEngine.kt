@@ -1,5 +1,6 @@
 package com.synctosh.app.mesh
 
+import com.syncdroid.shared.sync.IndexExportRange
 import com.syncdroid.shared.sync.FileSyncState
 import com.syncdroid.shared.sync.decideFileSync as decideSharedFileSync
 import com.syncdroid.shared.sync.normalizeRelativePath
@@ -144,14 +145,7 @@ class FileSyncEngine(
                 store.fileVersionsAfter(folder.folderId, range.previousSequence)
             }).sortedBy(FileVersion::localSequence)
             require(versions.size <= MAX_INDEX_FILES) { "Folder index is too large for one session" }
-            FolderIndexUpdate(
-                folder.folderId,
-                local.indexEpoch,
-                range.previousSequence,
-                range.lastSequence,
-                range.fullIndex,
-                versions.filter { it.deleted || !store.localActiveSyncException(folderId = it.folderId, relativePath = it.relativePath, deviceId = identity.deviceId) }.map { it.toIndexedRecord(root) },
-            )
+            indexUpdate(folder.folderId, local.indexEpoch, range, versions, root)
         }
     }
 
@@ -161,14 +155,24 @@ class FileSyncEngine(
         val local = store.folderIndexState(folderId, identity.deviceId) ?: return null
         val versions = store.fileVersions(folderId).sortedBy(FileVersion::localSequence)
         require(versions.size <= MAX_INDEX_FILES) { "Folder index is too large for one cloud manifest" }
-        return FolderIndexUpdate(
-            folder.folderId,
-            local.indexEpoch,
-            0,
-            local.maxSequence,
-            true,
-            versions.filter { it.deleted || !store.localActiveSyncException(folderId = it.folderId, relativePath = it.relativePath, deviceId = identity.deviceId) }.map { it.toIndexedRecord(root) },
-        )
+        return indexUpdate(folder.folderId, local.indexEpoch, IndexExportRange(true, 0, local.maxSequence), versions, root)
+    }
+
+    private fun indexUpdate(
+        folderId: String,
+        indexEpoch: Long,
+        range: IndexExportRange,
+        versions: List<FileVersion>,
+        root: Path,
+    ): FolderIndexUpdate {
+        val records = versions
+            .filter { it.deleted || !store.localActiveSyncException(folderId = it.folderId, relativePath = it.relativePath, deviceId = identity.deviceId) }
+            .map { it.toIndexedRecord(root) }
+        // Peers reject an index whose last record does not end its range, and a file removed from
+        // this device only can hold the newest sequence. Stop the range at the last record sent;
+        // the next exchange carries the empty remainder.
+        val lastSequence = records.lastOrNull()?.sequence ?: range.lastSequence
+        return FolderIndexUpdate(folderId, indexEpoch, range.previousSequence, lastSequence, range.fullIndex, records)
     }
 
     fun receiveIndexes(remoteDeviceId: String, updates: List<FolderIndexUpdate>, pendingFolderIds: Set<String>? = null): List<FileSyncPlan> {

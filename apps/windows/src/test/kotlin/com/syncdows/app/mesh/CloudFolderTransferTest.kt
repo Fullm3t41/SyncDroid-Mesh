@@ -1,6 +1,7 @@
 package com.syncdows.app.mesh
 
 import com.syncdroid.shared.cloud.*
+import com.syncdroid.shared.sync.validateFolderIndexUpdate
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlinx.coroutines.runBlocking
@@ -29,6 +30,23 @@ class CloudFolderTransferTest {
             assertEquals("keep elsewhere", Files.readString(a))
             Files.writeString(a, "unsynced edit")
             assertNull(engine.managedFiles(id).single().lastSyncedAtMillis)
+        }
+    }
+
+    @Test fun removingTheNewestFileFromThisDeviceKeepsTheIndexValid() = runBlocking {
+        Fixture().use { f ->
+            val id = f.folders.first().folderId
+            Files.writeString(f.rootsA.first().resolve("older.dat"), "older")
+            f.runA(id); f.runB(id)
+            Files.writeString(f.rootsA.first().resolve("newer.dat"), "newer")
+            f.runA(id); f.runB(id)
+            val engine = FileSyncEngine(f.sa, f.a, f.sa.profile()!!)
+            engine.deleteFromThisDevice(id, "newer.dat")
+
+            validateFolderIndexUpdate(engine.buildFullUpdate(id)!!)
+            engine.buildUpdatesForPeer(emptyList()).forEach(::validateFolderIndexUpdate)
+            f.runA(id); f.runB(id)
+            assertEquals("newer", Files.readString(f.rootsB.first().resolve("newer.dat")))
         }
     }
 
