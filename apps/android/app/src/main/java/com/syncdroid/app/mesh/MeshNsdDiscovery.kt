@@ -164,5 +164,5 @@ class MeshNsdDiscovery(
     }
 }
 
-private fun sameServiceType(left: String, right: String): Boolean =
+internal fun sameServiceType(left: String, right: String): Boolean =
     left.trimEnd('.').equals(right.trimEnd('.'), ignoreCase = true)

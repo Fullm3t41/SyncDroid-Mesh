@@ -26,7 +26,10 @@ class PairingNsd(context: Context, private val localDeviceId: String) : AutoClos
     private val mutableOffers = MutableStateFlow<Map<String, DiscoveredPairingOffer>>(emptyMap())
     val offers: StateFlow<Map<String, DiscoveredPairingOffer>> = mutableOffers.asStateFlow()
     private var registration: NsdManager.RegistrationListener? = null
-    private var discovery: NsdManager.DiscoveryListener? = null
+    @Volatile private var discovery: NsdManager.DiscoveryListener? = null
+    private val resolutionLock = Any()
+    private val pendingResolutions = ArrayDeque<NsdServiceInfo>()
+    private var resolutionActive = false
 
     fun advertise(port: Int, invitationId: String) {
         acquireLock()
@@ -56,12 +59,9 @@ class PairingNsd(context: Context, private val localDeviceId: String) : AutoClos
             override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) = Unit
             override fun onDiscoveryStopped(serviceType: String) = Unit
             override fun onServiceFound(serviceInfo: NsdServiceInfo) {
-                if (serviceInfo.serviceType != SERVICE_TYPE) return
-                @Suppress("DEPRECATION")
-                nsd.resolveService(serviceInfo, object : NsdManager.ResolveListener {
-                    override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) = Unit
-                    override fun onServiceResolved(resolved: NsdServiceInfo) = accept(resolved)
-                })
+                // Discovery reports the type with or without its trailing dot depending on the Android version.
+                if (!sameServiceType(serviceInfo.serviceType, SERVICE_TYPE)) return
+                enqueueResolution(serviceInfo)
             }
             override fun onServiceLost(serviceInfo: NsdServiceInfo) {
                 mutableOffers.value = mutableOffers.value.filterValues { it.serviceName != serviceInfo.serviceName }
@@ -69,6 +69,35 @@ class PairingNsd(context: Context, private val localDeviceId: String) : AutoClos
         }
         discovery = listener
         nsd.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, listener)
+    }
+
+    /** Before Android 14, a resolve fails while another is still in progress, so resolve one at a time. */
+    private fun enqueueResolution(serviceInfo: NsdServiceInfo) {
+        synchronized(resolutionLock) {
+            if (discovery == null) return
+            if (pendingResolutions.none { it.serviceName == serviceInfo.serviceName }) pendingResolutions.addLast(serviceInfo)
+        }
+        resolveNext()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun resolveNext() {
+        val service = synchronized(resolutionLock) {
+            if (resolutionActive) return
+            pendingResolutions.removeFirstOrNull()?.also { resolutionActive = true }
+        } ?: return
+        nsd.resolveService(service, object : NsdManager.ResolveListener {
+            override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) = resolutionFinished()
+            override fun onServiceResolved(resolved: NsdServiceInfo) {
+                accept(resolved)
+                resolutionFinished()
+            }
+        })
+    }
+
+    private fun resolutionFinished() {
+        synchronized(resolutionLock) { resolutionActive = false }
+        resolveNext()
     }
 
     private fun accept(info: NsdServiceInfo) {
@@ -87,6 +116,7 @@ class PairingNsd(context: Context, private val localDeviceId: String) : AutoClos
     }
 
     override fun close() {
+        synchronized(resolutionLock) { pendingResolutions.clear() }
         discovery?.let { runCatching { nsd.stopServiceDiscovery(it) } }
         registration?.let { runCatching { nsd.unregisterService(it) } }
         discovery = null
