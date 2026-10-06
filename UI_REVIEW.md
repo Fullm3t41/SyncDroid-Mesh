@@ -25,6 +25,7 @@ Reviewed Android (SyncDroid-Mesh), Windows (SyncDows), and macOS (SyncTosh). Lin
 | macOS app | 85 passed | Existing tests plus 12 Compose UI tests and the mesh-layout regression under Xvfb on Linux. |
 | Shared protocol/core | 85 passed; 1 skipped | Protocol and sync-core tests. The optional release-network smoke test was skipped. |
 | macOS updater | 6 passed | Python installer/update tests. |
+| Windows installer | Passed on native Windows CI | Legacy per-user MSI guard; fresh Program Files installation; machine-wide MSI registration; scripted uninstall; mesh-data retention. [Run](https://github.com/Fullm3t41/SyncDroid-Mesh/actions/runs/37414581998). |
 
 The desktop interaction tests cover pasted/cleared pairing codes, Enter, incomplete input, lockout, duplicate submission, expired offers, both first-run actions, folder setup gating, device removal and cancellation, chat send/clear, appearance, and settings actions. UI callback tests establish that the correct action is invoked; they do not establish delivery to another device.
 
@@ -42,7 +43,7 @@ To reproduce, run `./gradlew --no-daemon test` in each desktop project and `./gr
 
 ## Remaining verification and product gaps
 
-- **Native OS behavior is pending:** Windows installation/uninstallation, upgrade and data preservation, file pickers, touch keyboard, firewall prompts, tray/menu-bar behavior, launch at login, macOS permissions, and signed updates. The separate Windows installer changes include a disposable-machine CI smoke test, but no Windows machine was available here.
+- **Further native OS behavior is pending:** upgrades from real older installations, file pickers, touch keyboard, firewall prompts, tray/menu-bar behavior, launch at login, macOS permissions, and signed updates. Windows CI verified fresh installation, uninstall and data retention on a disposable runner; a new-PC test still needs to confirm the user's reported installation scenario.
 - **Real multi-device workflows are pending:** pairing and approval, discovery on Wi-Fi, file transfer, chat delivery/attachments, offline recovery, conflict resolution, and reconnection. Existing automated tests cover parts of these systems; they do not replace a Windows–macOS–Android device run.
 - **Cloud sign-in is pending:** Google Drive and OneDrive need configured release credentials and real accounts/devices. Scope and account controls were rendered; OAuth and remote transfer were not exercised.
 - **Android live-device behavior is pending:** permissions, keyboard visibility, background service, storage providers, and gesture navigation. An API 36 emulator without hardware acceleration eventually booted but showed system-service hangs and timed out during installation. It did not produce a successful live-app check. Robolectric checks are reported separately above.
