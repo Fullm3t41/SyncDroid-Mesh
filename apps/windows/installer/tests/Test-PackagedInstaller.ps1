@@ -36,6 +36,25 @@ try {
     if ((Get-Content -LiteralPath $sentinel) -ne 'keep mesh data') { throw 'Uninstall changed mesh data.' }
     $started = $false
     Write-Host 'Default Program Files install and scripted uninstall passed; mesh data was retained.'
+} catch {
+    if ($env:GITHUB_ACTIONS -eq 'true') {
+        # Put the useful error in the job summary as well as the downloadable logs.
+        # These logs come from this disposable test installation, never a user's machine.
+        function Write-InstallerAnnotation([string]$Title, [string]$Message) {
+            $escaped = $Message.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Host "::error title=${Title}::$escaped"
+        }
+        Write-InstallerAnnotation 'SyncDows installation check' $_.Exception.Message
+        Get-ChildItem -LiteralPath $LogDirectory -Filter '*.log' -File -Recurse -ErrorAction SilentlyContinue |
+            ForEach-Object {
+                $details = Select-String -LiteralPath $_.FullName -Pattern '(?i)(error 0x|error [0-9]|e[0-9]{3}:|exception|return value 3|failed to)' -Context 2, 2 |
+                    Select-Object -Last 4 | Out-String
+                if (-not [string]::IsNullOrWhiteSpace($details)) {
+                    Write-InstallerAnnotation ('SyncDows log - ' + $_.Name) $details.Substring(0, [Math]::Min(6000, $details.Length))
+                }
+            }
+    }
+    throw
 } finally {
     if ($started) {
         # Cleanup only the installation this test started; never recursively delete app/data folders.
