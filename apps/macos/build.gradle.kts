@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "com.synctosh"
-version = "1.2.14"
+version = "1.2.15"
 
 kotlin {
     jvmToolchain(17)
@@ -27,6 +27,7 @@ dependencies {
     implementation("org.jmdns:jmdns:3.6.2")
 
     testImplementation(kotlin("test"))
+    testImplementation(compose.desktop.uiTestJUnit4)
 }
 
 compose.desktop {
@@ -39,7 +40,7 @@ compose.desktop {
             targetFormats(TargetFormat.Dmg)
             packageName = "SyncTosh"
             // jpackage requires the first bundle-version component to be non-zero.
-            packageVersion = "1.2.14"
+            packageVersion = "1.2.15"
             description = "Apple Silicon local-first peer-to-peer folder synchronization for SyncDroid-Mesh"
             vendor = "Fullm3t41"
 

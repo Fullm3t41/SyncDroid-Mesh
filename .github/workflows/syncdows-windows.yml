@@ -42,9 +42,27 @@ jobs:
         shell: pwsh
         run: .\build-windows.ps1
 
+      - name: Verify fresh installation and uninstall
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem build\release\SyncDows-*-Windows-x64.exe)
+          if ($installers.Count -ne 1) { throw 'Expected exactly one Windows installer' }
+          .\installer\tests\Test-PackagedInstaller.ps1 -Installer $installers[0].FullName -DisposableMachine
+
+      - name: Upload installer diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: SyncDows-installer-logs
+          path: |
+            apps/windows/build/installer-smoke-logs/**
+            apps/windows/build/installer/**/migration.log
+            apps/windows/build/installer/**/overlap.log
+          if-no-files-found: ignore
+
       - name: Upload Windows installers
         uses: actions/upload-artifact@v7
         with:
           name: SyncDows-Windows
-          path: apps/windows/build/release/*.exe
+          path: apps/windows/build/release/*
           if-no-files-found: error

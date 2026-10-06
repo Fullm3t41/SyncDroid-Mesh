@@ -8,10 +8,12 @@
       UpgradeCode="43d9dc72-284c-4270-bc4b-f6c6dda16ed1"
       IconSourceFile="$(var.IconPath)">
 
+    <Log Prefix="SyncDows-setup" />
+
     <Variable
         Name="InstallFolder"
         Type="string"
-        Value="[LocalAppDataFolder]Programs\SyncDows"
+        Value="[ProgramFiles64Folder]SyncDows"
         Persisted="yes"
         bal:Overridable="yes" />
 
@@ -35,7 +37,7 @@
           PerMachine="no"
           Permanent="yes"
           Vital="yes"
-          InstallCommand="--install-path &quot;[InstallFolder]&quot;" />
+          InstallCommand="--machine-install --install-path &quot;[InstallFolder]&quot; --log &quot;[WixBundleLog].preflight.log&quot; --quiet" />
       <MsiPackage
           Id="SyncDowsMsi"
           SourceFile="$(var.MsiPath)"

@@ -1,6 +1,8 @@
 package com.synctosh.app.ui
 
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -226,9 +228,12 @@ fun SyncToshApp(
                                 onSyncNow = runtime::syncNow,
                                 onRenameDevice = ::requestRename,
                                 onCloseToNotificationBar = onCloseToNotificationBar,
+                                onStartMesh = { showCreateMesh = true },
+                                onJoinMesh = { runtime.dismissError(); showJoinMesh = true },
                             )
                             MainSection.Folders -> FoldersScreen(
                                 folders = meshState.folders,
+                                hasMesh = meshState.profile != null,
                                 loadManagedFiles = runtime::filesForManagement,
                                 onDeleteFile = runtime::deleteManagedFile,
                                 onRestoreFile = runtime::restoreManagedFile,
@@ -367,7 +372,7 @@ fun SyncToshApp(
                 onDismissRequest = { showRenameDialog = false },
                 title = { Text("Update device name") },
                 text = {
-                    Column {
+                    Column(Modifier.verticalScroll(rememberScrollState())) {
                         Text("This nickname identifies the Mac throughout your trusted mesh.")
                         Spacer(Modifier.height(12.dp))
                         OutlinedTextField(
@@ -426,7 +431,7 @@ fun SyncToshApp(
                 onDismissRequest = { folderToConfigure = null },
                 title = { Text("Configure ${folder.displayName}") },
                 text = {
-                    Column {
+                    Column(Modifier.verticalScroll(rememberScrollState())) {
                         Text("Choose where this mesh folder should live on this Mac.")
                         Spacer(Modifier.height(10.dp))
                         Text(

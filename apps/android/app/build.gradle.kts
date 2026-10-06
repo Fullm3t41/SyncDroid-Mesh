@@ -16,8 +16,8 @@ android {
         applicationId = "com.syncdroid.app"
         minSdk = 29
         targetSdk = 36
-        versionCode = 21
-        versionName = "1.2.14"
+        versionCode = 22
+        versionName = "1.2.15"
 
         manifestPlaceholders["appAuthRedirectScheme"] = "com.syncdroid.app"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -56,6 +56,8 @@ android {
         compose = true
         buildConfig = true
     }
+
+    testOptions.unitTests.isIncludeAndroidResources = true
 
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
@@ -97,6 +99,9 @@ dependencies {
     implementation(libs.bouncycastle.provider)
 
     debugImplementation(libs.androidx.compose.ui.tooling)
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
     testImplementation(libs.junit)
     testImplementation(libs.androidx.room.testing)
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    testImplementation("org.robolectric:robolectric:4.16.1")
 }

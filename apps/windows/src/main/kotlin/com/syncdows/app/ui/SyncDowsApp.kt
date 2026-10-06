@@ -1,6 +1,8 @@
 package com.syncdows.app.ui
 
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -239,9 +241,12 @@ fun SyncDowsApp(
                                 onSyncNow = runtime::syncNow,
                                 onRenameDevice = ::requestRename,
                                 onCloseToNotificationBar = onCloseToNotificationBar,
+                                onStartMesh = { showCreateMesh = true },
+                                onJoinMesh = { runtime.dismissError(); showJoinMesh = true },
                             )
                             MainSection.Folders -> FoldersScreen(
                                 folders = meshState.folders,
+                                hasMesh = meshState.profile != null,
                                 loadManagedFiles = runtime::filesForManagement,
                                 onDeleteFile = runtime::deleteManagedFile,
                                 onRestoreFile = runtime::restoreManagedFile,
@@ -383,7 +388,7 @@ fun SyncDowsApp(
                 onDismissRequest = { showRenameDialog = false },
                 title = { Text("Update device name") },
                 text = {
-                    Column {
+                    Column(Modifier.verticalScroll(rememberScrollState())) {
                         Text("This nickname identifies the PC throughout your trusted mesh.")
                         Spacer(Modifier.height(12.dp))
                         OutlinedTextField(
@@ -463,7 +468,7 @@ fun SyncDowsApp(
                 onDismissRequest = { showAddFolder = false },
                 title = { Text("Add a mesh folder") },
                 text = {
-                    Column {
+                    Column(Modifier.verticalScroll(rememberScrollState())) {
                         Text("Name the folder, then choose an existing location or select where SyncDows should create it.")
                         Spacer(Modifier.height(12.dp))
                         OutlinedTextField(
@@ -548,7 +553,7 @@ fun SyncDowsApp(
                 onDismissRequest = { folderToConfigure = null },
                 title = { Text("Configure ${folder.displayName}") },
                 text = {
-                    Column {
+                    Column(Modifier.verticalScroll(rememberScrollState())) {
                         Text("Choose where this mesh folder should live on this PC.")
                         Spacer(Modifier.height(10.dp))
                         Text(

@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.draganddrop.dragAndDropTarget
@@ -42,6 +43,7 @@ import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.InsertDriveFile
+import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.SettingsBrightness
@@ -134,6 +136,8 @@ fun SyncScreen(
     onSyncNow: () -> Unit,
     onRenameDevice: () -> Unit,
     onCloseToNotificationBar: () -> Unit,
+    onStartMesh: () -> Unit,
+    onJoinMesh: () -> Unit,
 ) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wide = maxWidth >= WIDE_SCREEN_BREAKPOINT
@@ -143,35 +147,31 @@ fun SyncScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             item {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(runtimeStatus, style = MaterialTheme.typography.displaySmall)
                     Text(
-                        meshName?.let { "Connected to $it." } ?: "Start or join a mesh to begin local synchronization.",
+                        meshName?.let { "Connected to $it." } ?: "Start a new mesh for your devices, or join one using a pairing code.",
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedButton(onClick = onCloseToNotificationBar) {
-                        Icon(Icons.Rounded.Computer, contentDescription = null, modifier = Modifier.size(17.dp))
-                        Spacer(Modifier.width(7.dp))
-                        Text(if (backgroundServiceEnabled) "Close to system tray" else "Close SyncDows")
-                    }
-                    Button(
-                        onClick = onSyncNow,
-                        enabled = meshName != null && !busy,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.onBackground,
-                            contentColor = MaterialTheme.colorScheme.background,
-                        ),
-                    ) {
-                        Icon(Icons.Rounded.Sync, contentDescription = null, modifier = Modifier.size(17.dp))
-                        Spacer(Modifier.width(7.dp))
-                        Text("Sync now")
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (meshName == null) {
+                            Button(onClick = onStartMesh) { Text("Start a mesh") }
+                            OutlinedButton(onClick = onJoinMesh) { Text("Join with code") }
+                        } else {
+                            Button(onClick = onSyncNow, enabled = !busy) {
+                                Icon(Icons.Rounded.Sync, contentDescription = null, modifier = Modifier.size(17.dp))
+                                Spacer(Modifier.width(7.dp))
+                                Text("Sync now")
+                            }
+                            OutlinedButton(onClick = onCloseToNotificationBar) {
+                                Icon(Icons.Rounded.Computer, contentDescription = null, modifier = Modifier.size(17.dp))
+                                Spacer(Modifier.width(7.dp))
+                                Text(if (backgroundServiceEnabled) "Close to system tray" else "Close SyncDows")
+                            }
+                        }
                     }
                 }
-            }
             }
             item { MeshStatusCard(meshName, peers) }
             item {
@@ -214,7 +214,11 @@ private fun MeshStatusCard(meshName: String?, peers: List<MeshPeer>) {
             Icon(Icons.Rounded.Wifi, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
             Spacer(Modifier.width(11.dp))
             Column {
-                Text(meshName?.let { "Local mesh online" } ?: "Local mesh not connected", style = MaterialTheme.typography.titleMedium)
+                Text(when {
+                    meshName == null -> "Mesh not set up"
+                    peers.any(MeshPeer::online) -> "Nearby devices available"
+                    else -> "Waiting for trusted devices"
+                }, style = MaterialTheme.typography.titleMedium)
                 Text(
                     if (meshName == null) "Discovery will remain local to your Wi-Fi network."
                     else "${peers.count(MeshPeer::online)} nearby · ${peers.size} trusted peer${if (peers.size == 1) "" else "s"}",
@@ -284,6 +288,7 @@ private fun ActiveFoldersSummary(folders: List<MeshFolder>) {
 @Composable
 fun FoldersScreen(
     folders: List<MeshFolder>,
+    hasMesh: Boolean,
     cloudPolicy: CloudSyncPolicy,
     onAddFolder: () -> Unit,
     onConfigureFolder: (MeshFolder) -> Unit,
@@ -318,7 +323,7 @@ fun FoldersScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                Button(onClick = onAddFolder) {
+                Button(onClick = onAddFolder, enabled = hasMesh) {
                     Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(17.dp))
                     Spacer(Modifier.width(6.dp))
                     Text("Add")
@@ -366,7 +371,8 @@ fun FoldersScreen(
                     if (folders.isEmpty()) {
                         EmptyStateCard(
                             "No folders configured",
-                            "Add a local folder, or pair with an existing mesh to receive its folder list.",
+                            if (hasMesh) "Add a local folder, or pair with another device to receive its folder list."
+                            else "Start or join a mesh in Devices, then add your first folder.",
                         )
                     } else {
                         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -612,6 +618,9 @@ private fun TrustedDeviceList(peers: List<MeshPeer>, onRemoveDevice: (String) ->
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
+                        }
+                        IconButton(onClick = { menuExpanded = true }) {
+                            Icon(Icons.Rounded.MoreVert, contentDescription = "Options for ${peer.name}")
                         }
                     }
                 }
@@ -1073,7 +1082,7 @@ fun SettingsScreen(
                                 icon = Icons.Rounded.Info,
                                 title = "About SyncDows",
                                 detail = "Created by Fullm3t41 · version ${updateState.currentVersion} · GNU GPLv3",
-                                onClick = {},
+                                onClick = null,
                             )
                         }
                         UpdateCard(updateState, "SyncDows", onUpdateAction)

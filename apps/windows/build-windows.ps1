@@ -1,11 +1,18 @@
 param(
     [ValidatePattern('^\d+\.\d+\.\d+$')]
-    [string]$Version = "1.2.9"
+    [string]$Version
 )
 
 $ErrorActionPreference = "Stop"
 
 Set-Location $PSScriptRoot
+$gradleBuild = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'build.gradle.kts') -Raw
+if ($gradleBuild -notmatch '(?m)^version = "(\d+\.\d+\.\d+)"\r?$') { throw 'Cannot read the SyncDows version' }
+$projectVersion = $Matches[1]
+if (-not $Version) { $Version = $projectVersion }
+if ($Version -ne $projectVersion -or $gradleBuild -notmatch ('packageVersion = "' + [regex]::Escape($Version) + '"')) {
+    throw 'The bundle, project, and MSI package versions must match'
+}
 & .\gradlew.bat --no-daemon test
 if ($LASTEXITCODE -ne 0) {
     throw "Gradle tests failed with exit code $LASTEXITCODE"
@@ -20,6 +27,7 @@ if (-not (Test-Path -LiteralPath $csharpCompiler)) {
 }
 
 & (Join-Path $PSScriptRoot "installer\tests\Test-UpdateInstaller.ps1") -Compiler $csharpCompiler
+& (Join-Path $PSScriptRoot "installer\tests\Test-UninstallScript.ps1")
 
 $uninstallerSource = Join-Path $PSScriptRoot "installer\UninstallSyncDows.cs"
 $uninstaller = Join-Path $bundleBuildDirectory "Uninstall SyncDows.exe"
@@ -37,7 +45,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "Install preflight helper compilation failed with exit code $LASTEXITCODE"
 }
 
-$migrationTestRoot = Join-Path $bundleBuildDirectory ("migration-test-" + [Guid]::NewGuid().ToString("N"))
+$migrationTestRoot = Join-Path $bundleBuildDirectory ("migration test ' " + [Guid]::NewGuid().ToString("N"))
 $migrationTestSource = Join-Path $migrationTestRoot "source"
 $migrationTestDestination = Join-Path $migrationTestRoot "destination"
 $migrationTestInstall = Join-Path $migrationTestRoot "install"
@@ -45,9 +53,10 @@ New-Item -ItemType Directory -Force -Path $migrationTestSource | Out-Null
 [System.IO.File]::WriteAllBytes((Join-Path $migrationTestSource "syncdows.db"), [byte[]](1, 2, 3, 4))
 [System.IO.File]::WriteAllBytes((Join-Path $migrationTestSource "identity.p12"), [byte[]](5, 6, 7))
 $migrationTest = Start-Process -FilePath $migrationHelper -ArgumentList @(
-    "--source", $migrationTestSource,
-    "--destination", $migrationTestDestination,
-    "--install-path", $migrationTestInstall,
+    "--source", ('"{0}"' -f $migrationTestSource),
+    "--destination", ('"{0}"' -f $migrationTestDestination),
+    "--install-path", ('"{0}"' -f $migrationTestInstall),
+    "--log", ('"{0}"' -f (Join-Path $migrationTestRoot 'migration.log')),
     "--skip-process-wait",
     "--quiet"
 ) -Wait -PassThru
@@ -57,14 +66,18 @@ if ($migrationTest.ExitCode -ne 0 -or
     throw "Install preflight migration smoke test failed"
 }
 $overlapTest = Start-Process -FilePath $migrationHelper -ArgumentList @(
-    "--source", $migrationTestSource,
-    "--destination", $migrationTestDestination,
-    "--install-path", $migrationTestDestination,
+    "--source", ('"{0}"' -f $migrationTestSource),
+    "--destination", ('"{0}"' -f $migrationTestDestination),
+    "--install-path", ('"{0}"' -f $migrationTestDestination),
+    "--log", ('"{0}"' -f (Join-Path $migrationTestRoot 'overlap.log')),
     "--skip-process-wait",
     "--quiet"
 ) -Wait -PassThru
 if ($overlapTest.ExitCode -eq 0) {
     throw "Install preflight accepted a path that overlaps persistent data"
+}
+if ((Get-Content -LiteralPath (Join-Path $migrationTestRoot 'overlap.log') -Raw) -notmatch 'overlaps') {
+    throw 'Install preflight did not log the rejected data-folder overlap'
 }
 
 & .\gradlew.bat --no-daemon --rerun-tasks createDistributable packageMsi
@@ -72,7 +85,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "Gradle MSI packaging failed with exit code $LASTEXITCODE"
 }
 
-$internalMsi = (Get-ChildItem "build\compose\binaries\main\msi\*.msi" | Select-Object -First 1).FullName
+$internalMsi = (Get-Item -LiteralPath "build\compose\binaries\main\msi\SyncDows-$Version.msi").FullName
 $wixDirectory = Join-Path $PSScriptRoot "build\wix311"
 $candle = Join-Path $wixDirectory "candle.exe"
 $light = Join-Path $wixDirectory "light.exe"
@@ -84,6 +97,8 @@ if (-not (Test-Path -LiteralPath $candle) -or -not (Test-Path -LiteralPath $ligh
 $releaseDirectory = Join-Path $PSScriptRoot "build\release"
 New-Item -ItemType Directory -Force -Path $releaseDirectory | Out-Null
 $releaseExe = Join-Path $releaseDirectory "SyncDows-$Version-Windows-x64.exe"
+$uninstallScript = Join-Path $PSScriptRoot 'installer\Uninstall-SyncDows.ps1'
+Copy-Item -LiteralPath $uninstallScript -Destination $releaseDirectory -Force
 Get-ChildItem -LiteralPath $releaseDirectory -File -Filter "SyncDows-*-Windows-x64.exe" |
     Where-Object FullName -ne $releaseExe |
     Remove-Item -Force
@@ -113,11 +128,12 @@ $bundleObject = Join-Path $bundleBuildDirectory "SyncDowsBundle.wixobj"
 & $candle -nologo -arch x64 `
     "-dPackageVersion=$Version" `
     "-dUninstallerPath=$uninstaller" `
+    "-dUninstallScriptPath=$uninstallScript" `
     -out $uninstallerPackageObject $uninstallerPackageSource
 if ($LASTEXITCODE -ne 0) {
     throw "Uninstaller package compilation failed with exit code $LASTEXITCODE"
 }
-& $light -nologo -spdb -sice:ICE91 -out $uninstallerPackage $uninstallerPackageObject
+& $light -nologo -spdb -out $uninstallerPackage $uninstallerPackageObject
 if ($LASTEXITCODE -ne 0) {
     throw "Uninstaller package linking failed with exit code $LASTEXITCODE"
 }
