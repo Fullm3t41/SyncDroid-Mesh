@@ -64,7 +64,7 @@ The script uses the registered WiX setup (or the legacy MSI product IDs), waits 
 From the folder containing the downloaded installer, replace the filename below with the version being tested:
 
 ```powershell
-.\SyncDows-1.2.15-Windows-x64.exe /log "$env:TEMP\SyncDows-install.log"
+.\SyncDows-1.2.16-Windows-x64.exe /log "$env:TEMP\SyncDows-install.log"
 ```
 
 After setup finishes, collect **all** `SyncDows-install*.log` files in `%TEMP%`, including the MSI logs and, in new builds, `SyncDows-install.log.preflight.log`. Include the installer filename, Windows version/architecture, error text, and whether SyncDows was previously installed. With no `/log` argument, new builds log to `%TEMP%\SyncDows-setup*.log`. Logs can contain local usernames and folder paths.
@@ -78,7 +78,7 @@ Installer regression checks can be run without installing the application:
 The complete native install/uninstall test is for a **disposable x64 Windows machine only** and refuses an existing SyncDows installation:
 
 ```powershell
-.\installer\tests\Test-PackagedInstaller.ps1 -Installer .\build\release\SyncDows-1.2.15-Windows-x64.exe -DisposableMachine
+.\installer\tests\Test-PackagedInstaller.ps1 -Installer .\build\release\SyncDows-1.2.16-Windows-x64.exe -DisposableMachine
 ```
 
 ## Desktop updates

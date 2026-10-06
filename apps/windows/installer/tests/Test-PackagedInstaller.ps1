@@ -20,14 +20,45 @@ Set-Content -LiteralPath $sentinel -Value 'keep mesh data'
 $started = $false
 try {
     $started = $true
+    # A legacy per-user MSI must still be rejected. The temporary registration
+    # belongs only to this disposable-machine test and is removed before installation.
+    $legacyKeyPath = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\SyncDows-smoke-' + [Guid]::NewGuid().ToString('N')
+    $userRegistry = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser, [Microsoft.Win32.RegistryView]::Registry64)
+    try {
+        $legacyKey = $userRegistry.CreateSubKey($legacyKeyPath)
+        try {
+            $legacyKey.SetValue('DisplayName', 'SyncDows')
+            $legacyKey.SetValue('Publisher', 'Fullm3t41')
+            $legacyKey.SetValue('WindowsInstaller', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+        } finally { $legacyKey.Dispose() }
+        $legacyLog = Join-Path $LogDirectory 'legacy-check.log'
+        $blocked = Start-Process -FilePath $Installer -ArgumentList ('/install /quiet /norestart /log "{0}"' -f $legacyLog) -Wait -PassThru
+        if ($blocked.ExitCode -in @(0, 3010) -or (Test-Path -LiteralPath (Join-Path $installFolder 'SyncDows.exe'))) {
+            throw 'Setup did not block an existing per-user MSI before installing application files.'
+        }
+        if ((Get-Content -LiteralPath ($legacyLog + '.preflight.log') -Raw) -notmatch 'A per-user SyncDows installation is already registered') {
+            throw 'Setup failed without identifying the existing per-user MSI.'
+        }
+    } finally {
+        $userRegistry.DeleteSubKeyTree($legacyKeyPath, $false)
+        $userRegistry.Dispose()
+    }
     $process = Start-Process -FilePath $Installer -ArgumentList ('/install /quiet /norestart /log "{0}"' -f (Join-Path $LogDirectory 'install.log')) -Wait -PassThru
     if ($process.ExitCode -notin @(0, 3010)) { throw "Install failed with $($process.ExitCode). See $LogDirectory." }
     foreach ($file in @('SyncDows.exe', 'Uninstall SyncDows.exe', 'Uninstall-SyncDows.ps1')) {
         if (-not (Test-Path -LiteralPath (Join-Path $installFolder $file))) { throw "Missing installed file: $file" }
     }
     $registrations = @(Get-SyncDowsRegistrations)
-    if ($registrations.Count -eq 0 -or @($registrations | Where-Object Hive -eq 'CurrentUser').Count -ne 0) {
-        throw 'Installation was not registered machine-wide.'
+    # Burn retains the initiating user's context for preflight/data preservation.
+    # Its bundle registration is per-user; both installed MSI products must be per-machine.
+    $products = @($registrations | Where-Object WindowsInstaller -eq 1)
+    foreach ($name in @('SyncDows', 'SyncDows Uninstaller')) {
+        if (@($products | Where-Object { $_.DisplayName -eq $name -and $_.Hive -eq 'LocalMachine' }).Count -eq 0) {
+            throw "$name was not registered machine-wide."
+        }
+    }
+    if (@($products | Where-Object Hive -eq 'CurrentUser').Count -ne 0) {
+        throw 'A per-user MSI remained after installation.'
     }
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $installFolder 'Uninstall-SyncDows.ps1') -Quiet -LogDirectory (Join-Path $LogDirectory 'uninstall')
     if ($LASTEXITCODE -notin @(0, 3010)) { throw "Uninstall script failed with $LASTEXITCODE." }

@@ -118,7 +118,11 @@ internal static class PreserveUserData
                         if (product == null) continue;
                         string displayName = product.GetValue("DisplayName") as string;
                         string publisher = product.GetValue("Publisher") as string;
-                        if (string.Equals(publisher, "Fullm3t41", StringComparison.OrdinalIgnoreCase) &&
+                        // Burn registers this mixed-scope bundle for the initiating user before
+                        // running preflight. Only a per-user MSI prevents a machine-wide upgrade;
+                        // treating the bundle itself as an installed MSI blocks every fresh install.
+                        if (object.Equals(product.GetValue("WindowsInstaller"), 1) &&
+                            string.Equals(publisher, "Fullm3t41", StringComparison.OrdinalIgnoreCase) &&
                             (string.Equals(displayName, "SyncDows", StringComparison.OrdinalIgnoreCase) ||
                              string.Equals(displayName, "SyncDows Uninstaller", StringComparison.OrdinalIgnoreCase)))
                         {

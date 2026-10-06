@@ -224,7 +224,7 @@ private fun ReviewSurface(mode: ThemeMode = ThemeMode.Light, width: Int = 980, f
 
 @Composable
 private fun ReviewSettings(mode: ThemeMode, onTheme: (ThemeMode) -> Unit = {}, onOpen: (String) -> Unit = {}) {
-    SettingsScreen(updateState = UpdateState.Idle("1.2.15"), onUpdateAction = {}, onImportUpdateBundle = {},
+    SettingsScreen(updateState = UpdateState.Idle("1.2.16"), onUpdateAction = {}, onImportUpdateBundle = {},
         onDownloadUpdateBundle = {}, offlineUpdateImportUnlocked = false, onOfflineUpdateImportUnlocked = {},
         themeMode = mode, onThemeModeChanged = onTheme, onOpenPowerSettings = { onOpen("power") },
         onOpenFileHistory = { onOpen("history") }, conflictCount = 0, onOpenConflicts = { onOpen("conflicts") },
