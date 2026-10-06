@@ -268,7 +268,11 @@ jobs:
         run: |
           set -euo pipefail
           repo="repos/${GITHUB_REPOSITORY}"
-          parent="$(gh api "$repo/git/ref/heads/$CHANNEL_BRANCH" --jq .object.sha 2>/dev/null || true)"
+          # A missing branch returns a JSON error body as well as a nonzero status.
+          # Do not treat that body as a parent commit when creating a new channel.
+          if ! parent="$(gh api "$repo/git/ref/heads/$CHANNEL_BRANCH" --jq .object.sha 2>/dev/null)"; then
+            parent=""
+          fi
 
           create_blob() {
             base64 -w 0 "$1" \
