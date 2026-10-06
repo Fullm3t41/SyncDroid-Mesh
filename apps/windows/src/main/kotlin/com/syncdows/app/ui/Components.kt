@@ -168,14 +168,14 @@ fun SettingsActionRow(
     icon: ImageVector,
     title: String,
     detail: String,
-    onClick: () -> Unit,
+    onClick: (() -> Unit)?,
     enabled: Boolean = true,
     trailing: @Composable (() -> Unit)? = null,
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(enabled = enabled, onClick = onClick)
+            .then(if (onClick != null) Modifier.clickable(enabled = enabled, onClick = onClick) else Modifier)
             .padding(16.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

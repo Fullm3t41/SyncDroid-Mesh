@@ -32,6 +32,22 @@ jobs:
         run: |
           $tag = "${{ github.ref_name }}"
           .\apps\windows\build-windows.ps1 -Version $tag.Substring(1)
+      - name: Verify fresh installation and uninstall
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem apps\windows\build\release\SyncDows-*-Windows-x64.exe)
+          if ($installers.Count -ne 1) { throw 'Expected exactly one Windows installer' }
+          .\apps\windows\installer\tests\Test-PackagedInstaller.ps1 -Installer $installers[0].FullName -DisposableMachine
+      - name: Upload Windows installer diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-installer-diagnostics
+          path: |
+            apps/windows/build/installer-smoke-logs/**
+            apps/windows/build/installer/**/*.log
+            apps/windows/build/reports/tests/**
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v7
         with:
           name: release-windows
@@ -131,6 +147,20 @@ jobs:
           pattern: release-*
           path: release-assets
           merge-multiple: true
+      - name: Read release channel
+        id: channel
+        shell: bash
+        run: |
+          set -euo pipefail
+          channel_file="release-notes/${GITHUB_REF_NAME#v}.json"
+          prerelease=false
+          if [[ -f "$channel_file" ]]; then
+            prerelease="$(jq -er 'if (.prerelease | type) == "boolean" then (.prerelease | tostring) else error("prerelease must be a boolean") end' "$channel_file")"
+          fi
+          channel_branch=updates
+          if [[ "$prerelease" == true ]]; then channel_branch=prereleases; fi
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+          echo "branch=$channel_branch" >> "$GITHUB_OUTPUT"
       - name: Build the update manifest
         shell: bash
         run: |
@@ -185,6 +215,7 @@ jobs:
       - name: Publish the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          IS_PRERELEASE: ${{ steps.channel.outputs.prerelease }}
         shell: bash
         run: |
           set -euo pipefail
@@ -194,6 +225,9 @@ jobs:
             "release-assets/SyncTosh-${version}-macOS-arm64.dmg"
             "release-assets/SyncDows-${version}-Windows-x64.exe"
             "release-assets/SyncDroid-Mesh-${version}-offline.sdu"
+            "release-assets/Uninstall-SyncDows.ps1"
+            "release-assets/syncdroid-update.properties"
+            "release-assets/syncdroid-update.properties.sig"
           )
           for file in "${public_assets[@]}"; do test -f "$file"; done
           notes_file="release-notes/${version}.md"
@@ -201,6 +235,12 @@ jobs:
             notes=(--notes-file "$notes_file")
           else
             notes=(--generate-notes)
+          fi
+          release_flags=(--prerelease=false --latest)
+          release_title="SyncDroid-Mesh $version"
+          if [[ "$IS_PRERELEASE" == true ]]; then
+            release_flags=(--prerelease --latest=false)
+            release_title="SyncDroid-Mesh $version — testing prerelease"
           fi
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" "${public_assets[@]}" \
@@ -210,24 +250,25 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --verify-tag \
               --draft=false \
-              --latest \
-              --title "SyncDroid-Mesh ${GITHUB_REF_NAME#v}"
+              "${release_flags[@]}" \
+              --title "$release_title"
           else
             gh release create "$GITHUB_REF_NAME" "${public_assets[@]}" \
               --repo "$GITHUB_REPOSITORY" \
               --verify-tag \
               "${notes[@]}" \
-              --latest \
-              --title "SyncDroid-Mesh ${GITHUB_REF_NAME#v}"
+              "${release_flags[@]}" \
+              --title "$release_title"
           fi
-      - name: Publish signed updater metadata
+      - name: Publish signed metadata to the release channel
         env:
           GH_TOKEN: ${{ github.token }}
+          CHANNEL_BRANCH: ${{ steps.channel.outputs.branch }}
         shell: bash
         run: |
           set -euo pipefail
           repo="repos/${GITHUB_REPOSITORY}"
-          parent="$(gh api "$repo/git/ref/heads/updates" --jq .object.sha 2>/dev/null || true)"
+          parent="$(gh api "$repo/git/ref/heads/$CHANNEL_BRANCH" --jq .object.sha 2>/dev/null || true)"
 
           create_blob() {
             base64 -w 0 "$1" \
@@ -260,7 +301,7 @@ jobs:
           )"
 
           if [[ -n "$parent" ]]; then
-            gh api --method PATCH "$repo/git/refs/heads/updates" -f sha="$commit" -F force=false >/dev/null
+            gh api --method PATCH "$repo/git/refs/heads/$CHANNEL_BRANCH" -f sha="$commit" -F force=false >/dev/null
           else
-            gh api --method POST "$repo/git/refs" -f ref="refs/heads/updates" -f sha="$commit" >/dev/null
+            gh api --method POST "$repo/git/refs" -f ref="refs/heads/$CHANNEL_BRANCH" -f sha="$commit" >/dev/null
           fi

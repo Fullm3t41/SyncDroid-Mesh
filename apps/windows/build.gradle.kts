@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "com.syncdows"
-version = "1.2.14"
+version = "1.2.15"
 
 kotlin {
     jvmToolchain(17)
@@ -33,6 +33,7 @@ dependencies {
     implementation("org.jmdns:jmdns:3.6.2")
 
     testImplementation(kotlin("test"))
+    testImplementation(compose.desktop.uiTestJUnit4)
 }
 
 compose.desktop {
@@ -44,7 +45,7 @@ compose.desktop {
             targetFormats(TargetFormat.Exe, TargetFormat.Msi)
             packageName = "SyncDows"
             // jpackage requires a non-zero first component even while the product is pre-1.0.
-            packageVersion = "1.2.14"
+            packageVersion = "1.2.15"
             description = "SyncDows Background Sync"
             vendor = "Fullm3t41"
 
@@ -53,7 +54,7 @@ compose.desktop {
                 menuGroup = "SyncDows"
                 shortcut = true
                 dirChooser = true
-                perUserInstall = true
+                perUserInstall = false
                 upgradeUuid = "7f646530-5b2f-4a97-ae0e-d99ce65b6f0e"
             }
         }

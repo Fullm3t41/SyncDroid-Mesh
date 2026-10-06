@@ -1,5 +1,6 @@
 package com.syncdroid.app.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -105,6 +106,8 @@ fun ConfiguredFolderContentsScreen(
         }
     }
 
+    BackHandler { if (!removing) navigateBack() }
+
     fun removeSelected(exclude: Boolean, everywhere: Boolean = false, permanent: Boolean = false) {
         val paths = selectedPaths.toList()
         if (paths.isEmpty() || source == null) return
@@ -136,7 +139,7 @@ fun ConfiguredFolderContentsScreen(
                     Text(if (selectedPaths.isEmpty()) folder.game else "${selectedPaths.size} selected")
                 },
                 navigationIcon = {
-                    IconButton(onClick = ::navigateBack) {
+                    IconButton(onClick = ::navigateBack, enabled = !removing) {
                         Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back")
                     }
                 },

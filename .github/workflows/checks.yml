@@ -26,6 +26,15 @@ jobs:
           cache: gradle
       - name: Test and build SyncDroid-Mesh
         run: ./gradlew --no-daemon testDebugUnitTest assembleDebug
+      - name: Upload Android test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: Android-test-reports
+          path: |
+            apps/android/app/build/reports/tests/**
+            apps/android/app/build/ui-review/**
+          if-no-files-found: ignore
 
   macos:
     runs-on: macos-15
@@ -42,6 +51,15 @@ jobs:
       - name: Test and build SyncTosh
         working-directory: apps/macos
         run: ./gradlew --no-daemon test
+      - name: Upload SyncTosh UI review
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: SyncTosh-UI-review
+          path: |
+            apps/macos/build/ui-review/**
+            apps/macos/build/reports/tests/**
+          if-no-files-found: ignore
 
   windows:
     runs-on: windows-latest
@@ -61,6 +79,15 @@ jobs:
         run: |
           .\gradlew.bat --no-daemon test
           if ($LASTEXITCODE -ne 0) { throw "Gradle tests failed with exit code $LASTEXITCODE" }
+      - name: Upload SyncDows UI review
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: SyncDows-UI-review
+          path: |
+            apps/windows/build/ui-review/**
+            apps/windows/build/reports/tests/**
+          if-no-files-found: ignore
 
   shared:
     runs-on: ubuntu-latest

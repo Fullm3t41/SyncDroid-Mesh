@@ -1,11 +1,14 @@
 package com.syncdows.app.ui
 
-import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
@@ -15,7 +18,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -44,7 +46,7 @@ fun CreateMeshDialog(onDismiss: () -> Unit, onCreate: (String) -> Unit) {
         onDismissRequest = onDismiss,
         title = { Text("Start a mesh") },
         text = {
-            Column {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
                 Text("This PC becomes the first equal member. There is no host device.")
                 Spacer(Modifier.height(14.dp))
                 OutlinedTextField(
@@ -75,11 +77,17 @@ fun PairingOfferDialog(offer: VisiblePairingOffer, onDismiss: () -> Unit) {
         onDismissRequest = onDismiss,
         title = { Text("Add a trusted device") },
         text = {
-            Column {
-                Text("Enter this code on the nearby device. It expires in ${remainingSeconds / 60}:${(remainingSeconds % 60).toString().padStart(2, '0')}.")
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text(if (remainingSeconds > 0) {
+                    "Enter this code on the nearby device. It expires in ${remainingSeconds / 60}:${(remainingSeconds % 60).toString().padStart(2, '0')}."
+                } else {
+                    "This code has expired. Close this dialog and choose Add a device to generate a new code."
+                })
                 Spacer(Modifier.height(18.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    offer.code.forEach { digit -> CodeBox(digit.toString(), onChange = {}, enabled = false) }
+                if (remainingSeconds > 0) SelectionContainer {
+                    Text(offer.code.chunked(3).joinToString("  "),
+                        modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center,
+                        style = MaterialTheme.typography.headlineLarge)
                 }
                 Spacer(Modifier.height(14.dp))
                 Text(
@@ -101,74 +109,47 @@ fun JoinMeshDialog(
     onDismiss: () -> Unit,
     onJoin: (String) -> Unit,
 ) {
-    val digits = remember { mutableStateListOf("", "", "", "", "", "") }
-    val focus = remember { List(6) { FocusRequester() } }
+    var code by remember { mutableStateOf("") }
+    val focus = remember { FocusRequester() }
+    val canJoin = code.length == 6 && attemptsRemaining > 0 && !busy
+    fun submit() { if (canJoin) onJoin(code) }
     AlertDialog(
         onDismissRequest = { if (!busy) onDismiss() },
         title = { Text("Join a mesh") },
         text = {
-            Column {
-                Text("Enter the six-digit code shown by an existing trusted device.")
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text("On an existing device, open Devices and choose Add a device. Enter its six-digit code here while both devices are on the same Wi-Fi.")
                 Spacer(Modifier.height(18.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    digits.indices.forEach { index ->
-                        CodeBox(
-                            value = digits[index],
-                            enabled = !busy,
-                            modifier = Modifier
-                                .focusRequester(focus[index])
-                                .onPreviewKeyEvent { event ->
-                                    if (event.type == KeyEventType.KeyDown && event.key == Key.Backspace && digits[index].isEmpty() && index > 0) {
-                                        digits[index - 1] = ""
-                                        focus[index - 1].requestFocus()
-                                        true
-                                    } else false
-                                },
-                            onChange = { entered ->
-                                val number = entered.filter(Char::isDigit).takeLast(1)
-                                digits[index] = number
-                                if (number.isNotEmpty() && index < 5) focus[index + 1].requestFocus()
-                            },
-                        )
-                    }
-                }
+                OutlinedTextField(
+                    value = code,
+                    onValueChange = { entered -> code = entered.filter { it in '0'..'9' }.take(6) },
+                    enabled = !busy,
+                    label = { Text("Six-digit code") },
+                    placeholder = { Text("123456") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().focusRequester(focus).showWindowsTouchKeyboardOnTap(!busy)
+                        .onPreviewKeyEvent { event ->
+                            if (event.type == KeyEventType.KeyDown && event.key == Key.Enter) {
+                                submit()
+                                true
+                            } else false
+                        },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword, imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { submit() }),
+                    textStyle = MaterialTheme.typography.titleLarge.copy(textAlign = TextAlign.Center),
+                )
                 Spacer(Modifier.height(12.dp))
                 Text(
-                    error ?: "$attemptsRemaining attempts remaining.",
+                    error ?: if (attemptsRemaining > 0) "$attemptsRemaining attempts remaining." else "Pairing is temporarily locked. Try again after the lockout ends.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = if (error == null) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
                 )
             }
         },
-        confirmButton = {
-            TextButton(
-                onClick = { onJoin(digits.joinToString("")) },
-                enabled = digits.all(String::isNotEmpty) && attemptsRemaining > 0 && !busy,
-            ) { Text(if (busy) "Pairing…" else "Join") }
-        },
+        confirmButton = { TextButton(onClick = ::submit, enabled = canJoin) { Text(if (busy) "Pairing…" else "Join") } },
         dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text("Cancel") } },
     )
-    LaunchedEffect(Unit) { focus.first().requestFocus() }
-}
-
-@Composable
-private fun CodeBox(
-    value: String,
-    onChange: (String) -> Unit,
-    enabled: Boolean,
-    modifier: Modifier = Modifier,
-) {
-    OutlinedTextField(
-        value = value,
-        onValueChange = onChange,
-        enabled = enabled,
-        modifier = modifier
-            .size(width = 48.dp, height = 58.dp)
-            .showWindowsTouchKeyboardOnTap(enabled),
-        textStyle = MaterialTheme.typography.titleLarge.copy(textAlign = TextAlign.Center),
-        singleLine = true,
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-    )
+    LaunchedEffect(Unit) { if (!busy) focus.requestFocus() }
 }
 
 private fun Modifier.showWindowsTouchKeyboardOnTap(enabled: Boolean): Modifier {

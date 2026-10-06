@@ -1,5 +1,10 @@
 package com.syncdroid.app.ui
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.runtime.rememberUpdatedState
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
 import android.Manifest
 import android.content.Context
 import android.content.Intent
@@ -244,6 +249,8 @@ fun SyncDroidApp(openFoldersRequest: Int = 0) {
     var showCloudSettings by rememberSaveable { mutableStateOf(false) }
     var showFileHistory by rememberSaveable { mutableStateOf(false) }
     var showPairing by rememberSaveable { mutableStateOf(false) }
+    var pairingInProgress by remember { mutableStateOf(false) }
+    var pairingJoinJob by remember { mutableStateOf<Job?>(null) }
     var folderSettingsId by rememberSaveable { mutableStateOf<String?>(null) }
     var openFolderContentsId by rememberSaveable { mutableStateOf<String?>(null) }
     var pairingOffer by remember { mutableStateOf<PairingCodeOffer?>(null) }
@@ -830,6 +837,30 @@ fun SyncDroidApp(openFoldersRequest: Int = 0) {
         }
     }
 
+    fun closePairing() {
+        pairingJoinJob?.cancel()
+        pairingJoinJob = null
+        pairingInProgress = false
+        showPairing = false
+    }
+
+    BackHandler(enabled = showPowerSettings || showWifiRules || showCloudSettings || showFileHistory ||
+        showPairing || openFolderContentsId != null || folderSettingsId != null || showFileManager ||
+        pendingSystemUri != null || selectedTab != MainTab.Sync) {
+        when {
+            showPowerSettings -> showPowerSettings = false
+            showWifiRules -> { showWifiRules = false; showPowerSettings = true }
+            showCloudSettings -> showCloudSettings = false
+            showFileHistory -> showFileHistory = false
+            showPairing -> closePairing()
+            openFolderContentsId != null -> openFolderContentsId = null
+            folderSettingsId != null -> folderSettingsId = null
+            showFileManager -> showFileManager = false
+            pendingSystemUri != null -> pendingSystemUri = null
+            else -> selectedTab = MainTab.Sync
+        }
+    }
+
     SyncDroidTheme(darkTheme = darkTheme) {
         val imeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
         SideEffect {
@@ -928,6 +959,7 @@ fun SyncDroidApp(openFoldersRequest: Int = 0) {
             } else if (showPairing) {
                 PairingScreen(
                     offer = pairingOffer,
+                    busy = pairingInProgress,
                     status = pairingStatus,
                     currentMeshName = meshProfile.groupName,
                     canStartNewMesh = meshDevices.none {
@@ -940,14 +972,24 @@ fun SyncDroidApp(openFoldersRequest: Int = 0) {
                         val attemptState = pairingAttemptLimiter.state()
                         pairingAttemptRevision++
                         val coordinator = pairingCoordinator
-                        if (attemptState.lockedUntilMillis > System.currentTimeMillis()) {
+                        if (pairingInProgress) {
+                            // Keep one discovery/handshake active so repeated taps cannot consume attempts.
+                        } else if (attemptState.lockedUntilMillis > System.currentTimeMillis()) {
                             pairingStatus = "Too many incorrect codes. Pairing is temporarily locked."
                         } else if (coordinator == null) {
                             pairingStatus = "Pairing is still starting. Try again in a moment."
                         } else {
-                            scope.launch {
-                                val joined = try {
-                                    coordinator.join(code)
+                            pairingInProgress = true
+                            pairingJoinJob = scope.launch(start = CoroutineStart.LAZY) {
+                                try {
+                                    val joined = coordinator.join(code)
+                                    pairingAttemptLimiter.recordSuccess()
+                                    pairingAttemptRevision++
+                                    pairingStatus = "Joined ${joined.groupName}. This device is now trusted."
+                                    meshProfileRevision++
+                                    SyncServiceController.requestRefresh(context)
+                                } catch (_: TimeoutCancellationException) {
+                                    pairingStatus = "No nearby pairing device found. Keep its code screen open and connect both devices to the same Wi-Fi, then try again."
                                 } catch (cancellation: CancellationException) {
                                     throw cancellation
                                 } catch (_: Throwable) {
@@ -958,14 +1000,14 @@ fun SyncDroidApp(openFoldersRequest: Int = 0) {
                                     } else {
                                         "${updated.attemptsRemaining(System.currentTimeMillis())} attempts remaining."
                                     }
-                                    return@launch
+                                } finally {
+                                    if (pairingJoinJob === coroutineContext[Job]) {
+                                        pairingJoinJob = null
+                                        pairingInProgress = false
+                                    }
                                 }
-                                pairingAttemptLimiter.recordSuccess()
-                                pairingAttemptRevision++
-                                pairingStatus = "Joined ${joined.groupName}. This device is now trusted."
-                                meshProfileRevision++
-                                SyncServiceController.requestRefresh(context)
                             }
+                            pairingJoinJob?.start()
                         }
                     },
                     onStartNewMesh = { name ->
@@ -975,7 +1017,7 @@ fun SyncDroidApp(openFoldersRequest: Int = 0) {
                         pairingStatus = "New mesh ready · share the code below"
                     },
                     onRegenerate = { pairingOffer = PairingCodes.create() },
-                    onBack = { showPairing = false },
+                    onBack = ::closePairing,
                     modifier = Modifier.padding(scaffoldPadding),
                 )
             } else if (openFolderContentsId != null) {
@@ -1083,6 +1125,7 @@ fun SyncDroidApp(openFoldersRequest: Int = 0) {
                             showRenameDevice = true
                         },
                         onSyncNow = { SyncServiceController.requestRefresh(context) },
+                        onPairDevice = { showPairing = true },
                         modifier = Modifier.padding(scaffoldPadding),
                     )
                     MainTab.Folders -> FoldersScreen(
@@ -1849,6 +1892,7 @@ private fun SyncScreen(
     onReviewConflicts: () -> Unit,
     onRenameCurrentDevice: () -> Unit,
     onSyncNow: () -> Unit,
+    onPairDevice: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     LazyColumn(
@@ -1871,6 +1915,17 @@ private fun SyncScreen(
             }
         }
         item { LocalMeshHeader(syncAllowed, wifiGateEnabled, currentSsid, peers.count { it.online }) }
+        if (peers.isEmpty()) {
+            item {
+                Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
+                    Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("Connect another device", style = MaterialTheme.typography.titleMedium)
+                        Text("Open SyncDroid-Mesh, SyncTosh or SyncDows on your other device, then pair them using a six-digit code.")
+                        Button(onClick = onPairDevice) { Text("Pair a device") }
+                    }
+                }
+            }
+        }
         item {
             LocalMesh(
                 currentDevice = currentDeviceName,
@@ -2315,8 +2370,9 @@ private fun SwipeableDeviceRow(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun PairingScreen(
+internal fun PairingScreen(
     offer: PairingCodeOffer?,
+    busy: Boolean,
     status: String?,
     currentMeshName: String,
     canStartNewMesh: Boolean,
@@ -2337,8 +2393,8 @@ private fun PairingScreen(
     val focusedJoinScrollOffset = with(LocalDensity.current) { 48.dp.roundToPx() }
     var pairingClockMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
     val joinLockRemainingMillis = (joinLockedUntilMillis - pairingClockMillis).coerceAtLeast(0L)
-    LaunchedEffect(joinLockedUntilMillis) {
-        while (joinLockedUntilMillis > System.currentTimeMillis()) {
+    LaunchedEffect(joinLockedUntilMillis, offer?.expiresAtMillis) {
+        while (maxOf(joinLockedUntilMillis, offer?.expiresAtMillis ?: 0L) > System.currentTimeMillis()) {
             pairingClockMillis = System.currentTimeMillis()
             delay(1_000L)
         }
@@ -2391,7 +2447,7 @@ private fun PairingScreen(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
-                            OutlinedButton(onClick = { showStartMeshDialog = true }) {
+                            OutlinedButton(onClick = { showStartMeshDialog = true }, enabled = !busy) {
                                 Text("Start mesh")
                             }
                         }
@@ -2413,17 +2469,21 @@ private fun PairingScreen(
                         Text("Enter this code on the new device", style = MaterialTheme.typography.bodyLarge)
                         Spacer(Modifier.height(12.dp))
                         Text(
-                            offer?.code?.chunked(3)?.joinToString("  ") ?: "— — —  — — —",
+                            offer?.takeUnless { it.isExpired(pairingClockMillis) }?.code?.chunked(3)?.joinToString("  ") ?: "— — —  — — —",
                             style = MaterialTheme.typography.displayMedium,
                             fontWeight = FontWeight.SemiBold,
                         )
                         Text(
-                            "Expires after 5 minutes",
+                            when {
+                                offer == null -> "Preparing a pairing code…"
+                                offer.isExpired(pairingClockMillis) -> "Code expired. Generate a new code to continue."
+                                else -> "Expires in ${formatLockout(offer.expiresAtMillis - pairingClockMillis)}"
+                            },
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         Spacer(Modifier.height(10.dp))
-                        TextButton(onClick = onRegenerate) { Text("Generate a new code") }
+                        TextButton(onClick = onRegenerate, enabled = !busy) { Text("Generate a new code") }
                     }
                 }
             }
@@ -2438,6 +2498,7 @@ private fun PairingScreen(
                     Column(Modifier.padding(18.dp)) {
                         SixDigitCodeField(
                             value = joinCode,
+                            enabled = !busy,
                             onValueChange = { value ->
                                 joinCode = value.filter(Char::isDigit).take(6)
                             },
@@ -2457,10 +2518,10 @@ private fun PairingScreen(
                         Spacer(Modifier.height(10.dp))
                         Button(
                             onClick = { onJoin(joinCode) },
-                            enabled = joinCode.length == 6 && joinLockRemainingMillis == 0L,
+                            enabled = joinCode.length == 6 && joinLockRemainingMillis == 0L && !busy,
                             modifier = Modifier.fillMaxWidth(),
                         ) {
-                            Text("Find existing device")
+                            Text(if (busy) "Finding device…" else "Find existing device")
                         }
                         Spacer(Modifier.height(8.dp))
                         Text(
@@ -2513,10 +2574,14 @@ private fun PairingScreen(
 private fun SixDigitCodeField(
     value: String,
     onValueChange: (String) -> Unit,
+    enabled: Boolean = true,
     onFocusChanged: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     var focused by remember { mutableStateOf(false) }
+    val latestValue by rememberUpdatedState(value)
+    val latestOnValueChange by rememberUpdatedState(onValueChange)
+    val latestOnFocusChanged by rememberUpdatedState(onFocusChanged)
     Box(modifier = modifier.widthIn(max = 520.dp)) {
         AndroidView(
             factory = { context ->
@@ -2536,15 +2601,16 @@ private fun SixDigitCodeField(
                     setPadding(0, 0, 0, 0)
                     setOnFocusChangeListener { _, hasFocus ->
                         focused = hasFocus
-                        onFocusChanged(hasFocus)
+                        latestOnFocusChanged(hasFocus)
                     }
                     doAfterTextChanged { editable ->
                         val digits = editable?.toString().orEmpty().filter(Char::isDigit).take(6)
-                        if (digits != value) onValueChange(digits)
+                        if (digits != latestValue) latestOnValueChange(digits)
                     }
                 }
             },
             update = { input ->
+                input.isEnabled = enabled
                 if (input.text.toString() != value) {
                     input.setText(value)
                     input.setSelection(value.length)

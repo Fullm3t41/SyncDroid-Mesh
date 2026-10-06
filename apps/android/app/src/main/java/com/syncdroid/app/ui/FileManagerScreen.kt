@@ -1,5 +1,6 @@
 package com.syncdroid.app.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -91,6 +92,16 @@ fun FileManagerScreen(
     var rules by remember { mutableStateOf(SyncFilterRules()) }
     val currentDirectory = remember(currentPath) { File(currentPath) }
 
+    fun navigateBack() {
+        if (editFilters) {
+            editFilters = false
+        } else {
+            val parent = repository.parentInsideRoot(currentDirectory)
+            if (parent != null) currentPath = parent.path else onBack()
+        }
+    }
+    BackHandler(onBack = ::navigateBack)
+
     LaunchedEffect(currentPath, refreshKey) {
         loading = true
         loadError = null
@@ -122,7 +133,7 @@ fun FileManagerScreen(
             TopAppBar(
                 title = { Text("Choose a folder") },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
+                    IconButton(onClick = ::navigateBack) {
                         Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back")
                     }
                 },

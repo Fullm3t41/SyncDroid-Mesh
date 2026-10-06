@@ -10,26 +10,33 @@
     <Package
         InstallerVersion="500"
         Compressed="yes"
-        InstallScope="perUser" />
+        InstallScope="perMachine" />
     <MajorUpgrade DowngradeErrorMessage="A newer SyncDows uninstaller is already installed." />
     <MediaTemplate EmbedCab="yes" />
     <Property Id="ARPSYSTEMCOMPONENT" Value="1" />
 
     <Directory Id="TARGETDIR" Name="SourceDir">
-      <Directory Id="LocalAppDataFolder">
+      <Directory Id="ProgramFiles64Folder">
         <Directory Id="INSTALLDIR" Name="SyncDows">
-          <Component Id="SyncDowsUninstallerComponent" Guid="ffbc723f-1249-4881-b59c-34aaf1950af4">
+          <Component Id="SyncDowsUninstallerComponent" Guid="539740a7-0241-464b-a351-bc54a6b62912" Win64="yes">
             <RemoveFolder Id="RemoveSyncDowsInstallFolder" Directory="INSTALLDIR" On="uninstall" />
             <File
                 Id="SyncDowsUninstallerFile"
                 Name="Uninstall SyncDows.exe"
-                Source="$(var.UninstallerPath)" />
+                Source="$(var.UninstallerPath)"
+                KeyPath="yes" />
             <RegistryValue
-                Root="HKCU"
+                Root="HKLM"
                 Key="Software\Fullm3t41\SyncDows\Installer"
                 Name="UninstallerInstalled"
                 Type="integer"
-                Value="1"
+                Value="1" />
+          </Component>
+          <Component Id="SyncDowsUninstallScriptComponent" Guid="01ca7229-a706-4510-a6fb-77ca9e033b71" Win64="yes">
+            <File
+                Id="SyncDowsUninstallScriptFile"
+                Name="Uninstall-SyncDows.ps1"
+                Source="$(var.UninstallScriptPath)"
                 KeyPath="yes" />
           </Component>
         </Directory>
@@ -38,6 +45,7 @@
 
     <Feature Id="SyncDowsUninstallerFeature" Title="SyncDows Uninstaller" Level="1">
       <ComponentRef Id="SyncDowsUninstallerComponent" />
+      <ComponentRef Id="SyncDowsUninstallScriptComponent" />
     </Feature>
   </Product>
 </Wix>
